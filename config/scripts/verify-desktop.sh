@@ -101,6 +101,46 @@ else
     echo "FAIL  greetd config does not reference tuigreet"
     fail=1
 fi
+
+# The greeter's privilege-drop user must actually exist, or greetd cannot start
+# and the machine comes up to a black screen. systemd-sysusers creates it at boot
+# from /usr/lib/sysusers.d/greetd.conf, so in a build container it is absent from
+# /etc/passwd -- accept either an existing account or a sysusers declaration.
+greeter_user=$(sed -n 's/^user[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' /etc/greetd/config.toml)
+if [ -z "$greeter_user" ]; then
+    echo "ok    greetd has no user= (runs the greeter as root)"
+elif getent passwd "$greeter_user" >/dev/null 2>&1; then
+    echo "ok    greetd user exists: $greeter_user"
+elif grep -rqsE "^u[[:space:]]+$greeter_user[[:space:]]" /usr/lib/sysusers.d/; then
+    echo "ok    greetd user '$greeter_user' is created by sysusers at boot"
+else
+    echo "FAIL  greetd user '$greeter_user' exists in neither /etc/passwd nor sysusers.d -- greetd will fail to start"
+    fail=1
+fi
+
+# The greeter's state directory. tuigreet writes its last-user/session state
+# here, and it is created by greetd's tmpfiles.d at boot.
+if [ -d /var/lib/greetd ]; then
+    echo "ok    /var/lib/greetd present"
+else
+    echo "FAIL  /var/lib/greetd missing (greetd tmpfiles.d should create it)"
+    fail=1
+fi
+
+# The greeter binary greetd is told to run must exist and be executable. The
+# command is a bare name in config.toml, so resolve it through PATH -- testing
+# [ -x tuigreet ] would look for it relative to the cwd and always fail.
+greeter_cmd=$(sed -n 's/^command[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' /etc/greetd/config.toml | awk '{print $1}')
+greeter_path=$(command -v "$greeter_cmd" 2>/dev/null || true)
+if [ -z "$greeter_cmd" ]; then
+    echo "FAIL  could not parse the greeter command from /etc/greetd/config.toml"
+    fail=1
+elif [ -n "$greeter_path" ] && [ -x "$greeter_path" ]; then
+    echo "ok    greetd session command is executable: $greeter_cmd -> $greeter_path"
+else
+    echo "FAIL  greetd session command not found on PATH: ${greeter_cmd:-<unparsed>}"
+    fail=1
+fi
 if grep -qx "/usr/bin/fish" /etc/shells; then
     echo "ok    /etc/shells lists /usr/bin/fish"
 else

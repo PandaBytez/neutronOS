@@ -27,8 +27,14 @@ vt = "1"
 [default_session]
 # tuigreet reads /usr/share/wayland-sessions and offers Niri. Sessions are not
 # filtered: niri.desktop is the only one in the image, so it is the only choice.
+#
+# The user here MUST be the one greetd's own /usr/lib/sysusers.d/greetd.conf
+# creates, which is "greetd" -- not "greeter", which is the name the upstream
+# greetd docs and the Arch wiki use and which does NOT exist on Fedora. Naming a
+# missing user makes greetd fail to setuid, so display-manager.service dies and
+# graphical.target has nothing to draw: a black screen with no error.
 command = "tuigreet --time --remember --asterisks"
-user = "greeter"
+user = "greetd"
 EOF
 systemctl enable greetd.service
 
