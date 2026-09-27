@@ -32,5 +32,5 @@ jobs:
         with:
           recipe: ${{ matrix.recipe }}
           registry_token: ${{ github.token }}
-          pr_event_number: ${{ event.number }}
+          pr_event_number: ${{ github.event.number }}
           build_opts: "--no-sign"
