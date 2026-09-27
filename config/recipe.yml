@@ -8,7 +8,7 @@
 #   base       -> ublue-os/bazzite-gnome, GNOME stripped
 #
 # This name is the GHCR image path: ghcr.io/<owner>/neutron-niri
-name: neutron-niri
+name: neutronOS
 description: Terminal-focused scrollable-tiling atomic desktop with niri and Noctalia
 # bazzite-gnome (silverblue-based) is used for the OGC gaming kernel, akmods,
 # terra-mesa and the Terra repo -- Terra is where noctalia-greeter lives. It
