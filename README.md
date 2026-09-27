@@ -149,9 +149,9 @@ desktop, missing session component, or drifted default.
 Images are published as:
 
 ```
-ghcr.io/pandabytez/neutron-niri:latest     # rolling, tracks main
-ghcr.io/pandabytez/neutron-niri:44         # rolling, Fedora 44
-ghcr.io/pandabytez/neutron-niri:<sha>-44   # pinned to a commit
+ghcr.io/pandabytez/neutronos:latest     # rolling, tracks main
+ghcr.io/pandabytez/neutronos:44         # rolling, Fedora 44
+ghcr.io/pandabytez/neutronos:<sha>-44   # pinned to a commit
 ```
 
 > Built with `--no-sign`, so there is no cosign signature and the
@@ -169,14 +169,14 @@ partial image. Use CI for the real thing.
 ## Rebase an existing host
 
 ```bash
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/pandabytez/neutron-niri:latest
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/pandabytez/neutronos:latest
 systemctl reboot
 ```
 
 To pin an exact build:
 
 ```bash
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/pandabytez/neutron-niri@sha256:<digest>
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/pandabytez/neutronos@sha256:<digest>
 ```
 
 Rollback if the session does not come up:
