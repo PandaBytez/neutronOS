@@ -1,0 +1,112 @@
+# neutronOS -- niri + Noctalia Blueprint (BlueBuild)
+# https://blue-build.org/reference/recipe/
+#
+# Terminal-focused, scrollable-tiling atomic desktop:
+#   compositor -> niri (Fedora main)
+#   shell      -> Noctalia (Fedora main)
+#   greeter    -> greetd + tuigreet
+#   base       -> ublue-os/bazzite-gnome, GNOME stripped
+#
+# This name is the GHCR image path: ghcr.io/<owner>/neutron-niri
+name: neutron-niri
+description: Terminal-focused scrollable-tiling atomic desktop with niri and Noctalia
+# bazzite-gnome (silverblue-based) is used for the OGC gaming kernel, akmods,
+# terra-mesa and the Terra repo -- Terra is where noctalia-greeter lives. It
+# carries zero Plasma, and strip-gnome.sh removes the GNOME desktop it inherits.
+base-image: ghcr.io/ublue-os/bazzite-gnome
+image-version: latest
+
+modules:
+  # 1. /usr/local is a symlink to ../var/usrlocal and does not exist in a build
+  #    container, so anything writing there fails with "File exists" and, under
+  #    set -e, aborts the script silently doing nothing.
+  - type: script
+    scripts:
+      - pre-install.sh
+
+  # 2. Remove the GNOME desktop left over from the base image.
+  #    Runs before the install so the cascade has nothing of ours to swallow:
+  #    the COSMIC-era GTK4 apps shared dependencies with the GNOME set, and
+  #    dnf5 takes dependents along with what you remove.
+  - type: script
+    scripts:
+      - strip-gnome.sh
+
+  # 3. Core packages. Everything here is in Fedora 44 main; no COPRs are used.
+  #    niri pulls xwayland-satellite and ddcutil/cliphist/wlsunset are Noctalia's
+  #    optional dependencies.
+  - type: rpm-ostree
+    install:
+      # Compositor, shell, greeter
+      - niri
+      - noctalia
+      - tuigreet
+      - greetd
+      - greetd-selinux
+
+      # Portals. niri ships /usr/share/xdg-desktop-portal/niri-portals.conf and
+      # implements screencast via the GNOME backend, so both are required.
+      - xdg-desktop-portal
+      - xdg-desktop-portal-gnome
+      - xdg-desktop-portal-gtk
+
+      # Terminal. Alacritty over ptyxis on purpose: niri's columns are the
+      # splits, so a terminal with its own split panes is redundant. niri's
+      # default config already binds Mod+T to alacritty.
+      - alacritty
+
+      # Shell
+      - fish
+
+      # Noctalia helpers, and user avatars for the greeter
+      - accountsservice
+      - ddcutil
+      - cliphist
+      - wlsunset
+      - brightnessctl
+      - playerctl
+      - wl-clipboard
+
+  # 4. Remove the KDE leftovers the install closure drags in. Deliberately a
+  #    separate, small pass: see the script header.
+  - type: script
+    scripts:
+      - strip-kde-leftovers.sh
+
+  # 5. Homebrew for user-managed CLI & TUI packages
+  - type: brew
+
+  # 6. Pre-installed flatpaks
+  - type: default-flatpaks
+    configurations:
+      - scope: system
+        notify: false
+        install:
+          - io.github.kolunmi.Bazaar
+          - io.gitlab.librewolf-community
+          - com.vysp3r.ProtonPlus
+          - it.mijorus.gearlever
+          - io.github.ilya_zlobintsev.LACT
+          - com.ranfdev.DistroShelf
+
+  # 7. Default user skeleton: niri config, alacritty config, fish config
+  - type: files
+    files:
+      - source: etc/skel
+        destination: /etc/skel
+
+  # 8. Post-install adjustments. Runs after the flatpak module so the browser
+  #    MIME default is not raced by the flatpak install.
+  - type: script
+    scripts:
+      - post-install.sh
+
+  # 9. Seed the niri + Noctalia defaults
+  - type: script
+    scripts:
+      - niri-defaults.sh
+
+  # 10. Fail the build if the desktop is not niri-only
+  - type: script
+    scripts:
+      - verify-desktop.sh
