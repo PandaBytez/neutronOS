@@ -29,7 +29,7 @@ RUN /tmp/scripts/strip-gnome.sh
 RUN dnf install -y \
       niri noctalia tuigreet greetd greetd-selinux \
       xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
-      alacritty fish accountsservice \
+      alacritty fish accountsservice gamemode \
       cliphist wlsunset brightnessctl playerctl wl-clipboard && \
     dnf clean all
 

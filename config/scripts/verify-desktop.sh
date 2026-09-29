@@ -114,6 +114,32 @@ fi
 
 # --- Shared infrastructure the strip must not have taken with it.
 present mesa-dri-drivers mesa-libEGL pipewire
+
+# GameMode. The package is not enough: Fedora ships no user-preset for it, so
+# the daemon is only running if the wants symlink exists. Assert all three --
+# package, unit, and enablement -- because "installed" silently not running is
+# exactly the failure nobody notices until a game stutters.
+present gamemode
+if [ -e /usr/lib/systemd/user/gamemoded.service ]; then
+    echo "ok    gamemoded user unit present"
+else
+    echo "FAIL  /usr/lib/systemd/user/gamemoded.service missing"
+    fail=1
+fi
+if [ -L /etc/systemd/user/default.target.wants/gamemoded.service ] || \
+   [ -e /etc/systemd/user/default.target.wants/gamemoded.service ]; then
+    echo "ok    gamemoded enabled for every user"
+else
+    echo "FAIL  gamemoded is not enabled -- the package ships no preset, so it never starts"
+    fail=1
+fi
+# The auto-activation shim is what makes it work without per-game config.
+if rpm -ql gamemode 2>/dev/null | grep -q 'libgamemodeauto\.so'; then
+    echo "ok    libgamemodeauto present (auto-activation)"
+else
+    echo "FAIL  libgamemodeauto missing -- games would need gamemoderun manually"
+    fail=1
+fi
 present gnome-keyring gnome-keyring-pam gvfs avahi bluez flatpak
 
 # --- The gaming layer from the bazzite base must survive the strip, including

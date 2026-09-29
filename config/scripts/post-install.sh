@@ -38,7 +38,16 @@ user = "greetd"
 EOF
 systemctl enable greetd.service
 
-# 4. LibreWolf as the system default browser.
+# 4. Enable gamemoded for every user.
+#    gamemode ships only a *user* unit (/usr/lib/systemd/user/gamemoded.service)
+#    with WantedBy=default.target, and Fedora has no user-preset for it, so
+#    installing the package does not start it. Creating the wants symlink here
+#    enables it per-session for every account, current and future.
+mkdir -p /etc/systemd/user/default.target.wants
+ln -sf /usr/lib/systemd/user/gamemoded.service \
+       /etc/systemd/user/default.target.wants/gamemoded.service
+
+# 5. LibreWolf as the system default browser.
 #    `xdg-mime default` is NOT used: it writes to $HOME/.config/mimeapps.list,
 #    and during a build $HOME is root's, so it would land where no real user
 #    looks. /etc/xdg/mimeapps.list is the system-wide location and is not owned

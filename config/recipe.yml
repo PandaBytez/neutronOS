@@ -62,6 +62,11 @@ modules:
       # Shell
       - fish
 
+      # GameMode: the daemon plus gamemoderun and libgamemodeauto, so Steam
+      # titles get performance governor + screensaver inhibition while running.
+      # Installed alone it does NOT enable itself -- see post-install.sh.
+      - gamemode
+
       # Noctalia helpers, and user avatars for the greeter.
       # ddcutil is deliberately NOT listed: the base ships terra-ddcutil, which
       # Provides: ddcutil (3.0.2, newer than Fedora's 2.2.1), and installing the
