@@ -65,6 +65,7 @@ for f in /usr/share/wayland-sessions/niri.desktop \
          /usr/bin/niri-session \
          /etc/greetd/config.toml \
          /etc/skel/.config/niri/config.kdl \
+         /etc/niri/config.kdl \
          /etc/skel/.config/alacritty/alacritty.toml; do
     if [ -e "$f" ]; then
         echo "ok    file: $f"
@@ -73,6 +74,27 @@ for f in /usr/share/wayland-sessions/niri.desktop \
         fail=1
     fi
 done
+
+# The system niri config is the one every account reads when it has no personal
+# config, and the only thing that starts Noctalia. Assert both the file and the
+# spawn line, so this cannot silently regress the way skel-only did.
+if [ -e /etc/niri/config.kdl ]; then
+    if grep -qE '^[[:space:]]*spawn-at-startup "noctalia"' /etc/niri/config.kdl; then
+        echo "ok    /etc/niri/config.kdl starts Noctalia"
+    else
+        echo "FAIL  /etc/niri/config.kdl does not spawn noctalia"
+        fail=1
+    fi
+    if grep -qE '^[[:space:]]*spawn-at-startup "waybar"|spawn "(fuzzel|swaylock)"' /etc/niri/config.kdl; then
+        echo "FAIL  /etc/niri/config.kdl still spawns waybar/fuzzel/swaylock"
+        fail=1
+    else
+        echo "ok    /etc/niri/config.kdl references no removed component"
+    fi
+else
+    echo "FAIL  /etc/niri/config.kdl missing -- skel alone does not cover existing accounts"
+    fail=1
+fi
 
 # --- Shared infrastructure the strip must not have taken with it.
 present mesa-dri-drivers mesa-libEGL pipewire

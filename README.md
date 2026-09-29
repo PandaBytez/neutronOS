@@ -58,6 +58,7 @@ desktop it inherits, which `strip-gnome.sh` removes.
 | `config/scripts/post-install.sh` | Fish, greetd + tuigreet, LibreWolf MIME default |
 | `config/scripts/niri-defaults.sh` | Checks the niri/Noctalia wiring and validates the shipped config |
 | `config/scripts/verify-desktop.sh` | Build gate — 40+ assertions |
+| `config/scripts/niri-defaults.sh` | Installs `/etc/niri/config.kdl` and validates it |
 | `config/files/etc/skel/.config/niri/config.kdl` | niri config, derived from the packaged default |
 | `config/files/etc/skel/.config/alacritty/alacritty.toml` | Terminal config |
 | `Containerfile` | Local build, mirrors `config/recipe.yml` |
@@ -105,6 +106,20 @@ Three orderings are load-bearing, all learned the hard way:
   `$HOME/.config/mimeapps.list`, and during a build `$HOME` is root's, so it
   would land where no real user looks. `post-install.sh` appends to
   `/etc/xdg/mimeapps.list` instead, preserving the base's Bazaar entry.
+- **`/etc/skel` is NOT a system defaults mechanism.** It only populates home
+  directories at *account creation*, so it does nothing for a user who rebases
+  onto the image from an existing install. Shipping the niri config only in skel
+  meant such a user had no config at all, niri fell back to its built-in defaults
+  (which start nothing), and **Noctalia never launched**. The config is therefore
+  also installed to `/etc/niri/config.kdl`, which niri reads when the user has no
+  config of their own. niri uses exactly one file — the user's if it exists,
+  otherwise `/etc/niri/config.kdl` — and does not merge them, so a user who wants
+  to customise should copy it:
+  `mkdir -p ~/.config/niri && cp /etc/niri/config.kdl ~/.config/niri/`
+- **Alacritty has no system config path** — only `$XDG_CONFIG_HOME`. Its theming
+  can therefore only be shipped via skel, so a pre-existing account keeps
+  Alacritty's built-in defaults. To apply it:
+  `mkdir -p ~/.config/alacritty && cp /etc/skel/.config/alacritty/alacritty.toml ~/.config/alacritty/`
 - **The niri config is derived, not hand-written.** It is niri's packaged
   `default-config.kdl` with four substitutions, so the full binding set works out
   of the box. It deliberately omits niri 26.04-only directives
