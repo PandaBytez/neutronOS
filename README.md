@@ -89,6 +89,16 @@ Three orderings are load-bearing, all learned the hard way:
 
 - **All packages are Fedora 44 main.** No COPRs, no third-party repos. The one
   exception is the flatpaks, which come from Flathub.
+- **The base image floats and can break the build without any change here.**
+  `bazzite-gnome:latest` gained `terra-ddcutil` at some point, which `Provides:
+  ddcutil`; the recipe's explicit `ddcutil` then became a hard conflict
+  ("conflicting requests"). That is why `ddcutil` is not in the install list and
+  the gate asserts the *capability* instead of the package name. When adding a
+  package, check whether the base already provides it under a `terra-*` name.
+- **Do not use `cmd | grep -q` in these scripts.** Under `set -o pipefail`,
+  `grep -q` exits on first match, the producer takes SIGPIPE and exits 141, and
+  the pipeline reports failure for a successful match. Every check uses command
+  substitution (`x=$(cmd | grep ... || true)`) instead.
 - **Do not add an orphan sweep.** In a bootc/ostree image every package is
   installed with `reason=user`, so `dnf5 autoremove` reports "Nothing to do" and
   `dnf5 repoquery --unneeded` returns nothing. Removal lists are explicit and

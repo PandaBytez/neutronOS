@@ -62,9 +62,11 @@ modules:
       # Shell
       - fish
 
-      # Noctalia helpers, and user avatars for the greeter
+      # Noctalia helpers, and user avatars for the greeter.
+      # ddcutil is deliberately NOT listed: the base ships terra-ddcutil, which
+      # Provides: ddcutil (3.0.2, newer than Fedora's 2.2.1), and installing the
+      # Fedora package on top fails with "conflicting requests".
       - accountsservice
-      - ddcutil
       - cliphist
       - wlsunset
       - brightnessctl

@@ -56,7 +56,23 @@ absent '^(cosmic-|ptyxis|vicinae|yazi|ghostty|Thunar)'
 # --- The session itself.
 present niri noctalia tuigreet alacritty greetd
 present xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
-present fish accountsservice
+present fish accountsservice cliphist wlsunset brightnessctl playerctl wl-clipboard
+
+# Noctalia drives monitor brightness through ddcutil. The base provides it as
+# terra-ddcutil, so assert the capability rather than the package name --
+# installing Fedora's ddcutil on top is a hard conflict.
+#
+# Command substitution, not `rpm -qa ... | grep -qx`. The -q makes grep exit on
+# the first match, rpm takes SIGPIPE and dies 141, and under `set -o pipefail`
+# that turns a successful match into a false failure. Every other check in this
+# script uses the substitution form for the same reason.
+ddc_providers=$(rpm -qa --qf '%{name}\n' | grep -xE '(terra-)?ddcutil' | tr '\n' ' ' || true)
+if [ -n "$ddc_providers" ]; then
+    echo "ok    ddcutil provider present: $ddc_providers"
+else
+    echo "FAIL  no ddcutil provider (need ddcutil or terra-ddcutil for Noctalia brightness)"
+    fail=1
+fi
 
 # Files, not packages, that the desktop depends on.
 for f in /usr/share/wayland-sessions/niri.desktop \

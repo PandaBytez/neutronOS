@@ -30,7 +30,7 @@ RUN dnf install -y \
       niri noctalia tuigreet greetd greetd-selinux \
       xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
       alacritty fish accountsservice \
-      ddcutil cliphist wlsunset brightnessctl playerctl wl-clipboard && \
+      cliphist wlsunset brightnessctl playerctl wl-clipboard && \
     dnf clean all
 
 # Remove the KDE leftovers the install closure drags in
