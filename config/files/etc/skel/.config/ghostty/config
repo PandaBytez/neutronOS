@@ -1,0 +1,65 @@
+# Ghostty configuration for neutronOS.
+#
+# Ghostty reads exactly one config file, $XDG_CONFIG_HOME/ghostty/config, and has
+# NO system-wide config path. So like Alacritty before it, this can only be
+# shipped through /etc/skel, which means a pre-existing account keeps Ghostty's
+# built-in defaults until it copies the file:
+#
+#   mkdir -p ~/.config/ghostty && cp /etc/skel/.config/ghostty/config ~/.config/ghostty/config
+#
+# Reload a running Ghostty with Ctrl+Shift+comma. Some options only apply to new
+# windows. `ghostty +show-config --default --docs` lists every option and its
+# default; see https://ghostty.org/docs/config for details.
+#
+# Syntax is plain `key = value`. A '#' starts a comment and cannot appear after
+# a value (`background = #123abc` sets the colour, it does not comment). An
+# empty value resets a key to its default.
+
+# --- Appearance -------------------------------------------------------------
+# 0.95 opacity needs a compositor behind it. niri renders the wallpaper through
+# the window, so this shows a slightly softened wallpaper with no blur. Adding
+# blur means niri's `background-effect` directive, which only parses on niri
+# 26.04+ -- this image's config deliberately omits it so niri still boots on
+# 25.11. Raise the opacity to 1 for a flat background.
+window-theme = dark
+background-opacity = 0.95
+
+# --- Colours ----------------------------------------------------------------
+# The palette below is the GNOME/Adwaita dark set. `theme` supplies the colours
+# the palette does not cover; the explicit palette wins where both are set.
+theme = Adwaita Dark
+background = #1d1d20
+selection-background = #ffffff
+selection-foreground = #5e5c64
+cursor-color = #ffffff
+cursor-text = #1d1d20
+palette = 0=#241f31
+palette = 1=#c01c28
+palette = 2=#2ec27e
+palette = 3=#f5c211
+palette = 4=#1e78e4
+palette = 5=#9841bb
+palette = 6=#0ab9dc
+palette = 7=#c0bfbc
+palette = 8=#5e5c64
+palette = 9=#ed333b
+palette = 10=#57e389
+palette = 11=#f8e45c
+palette = 12=#51a1ff
+palette = 13=#c061cb
+palette = 14=#4fd2fd
+palette = 15=#f6f5f4
+
+# --- Font -------------------------------------------------------------------
+# JetBrainsMono Nerd Font, from the jetbrainsmono-nerd-fonts package. The Nerd
+# glyphs are what make eza, bat, fzf and git-delta output render instead of
+# showing tofu boxes. Do not downgrade this to plain "JetBrains Mono" without
+# expecting broken icons in the CLI tools this image installs.
+font-size = 14
+font-family = JetBrainsMono Nerd Font
+
+# --- Input and behaviour ----------------------------------------------------
+# 0.45 slows wheel scrolling so a trackpad does not overshoot past a long build
+# log. `link-url` makes ctrl-click follow URLs in terminal output.
+mouse-scroll-multiplier = 0.45
+link-url = true

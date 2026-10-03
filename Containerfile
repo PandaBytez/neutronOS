@@ -28,8 +28,9 @@ RUN /tmp/scripts/pre-install.sh
 # matters most -- this is a laptop image.
 RUN dnf install -y \
       niri noctalia tuigreet greetd greetd-selinux \
+      dbus-daemon polkit \
       xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
-      fish alacritty \
+      fish \
       pipewire wireplumber gnome-keyring gnome-keyring-pam gvfs avahi bluez \
       NetworkManager \
       ddcutil accountsservice cliphist wlsunset brightnessctl playerctl \
@@ -41,7 +42,21 @@ RUN dnf install -y \
       tlp && \
     dnf clean all
 
-# Post-install: fish, greetd+tuigreet, TLP, LibreWolf MIME default
+# Enable the Terra repository, which carries Ghostty, the Nerd Font build and the
+# Noctalia greeter.
+# Deliberately a separate step AFTER the install above: once Terra is enabled the
+# resolver can see its versions of anything, so enabling it in the same
+# transaction as the session risks picking Terra's build over Fedora's. Base
+# repo only -- terra-release-extras and -mesa are never installed.
+RUN /tmp/scripts/terra-repo.sh
+
+# The terminal, the font and the greeter. None is in Fedora main: Ghostty is not
+# packaged for Fedora at all, Fedora's jetbrains-mono-fonts lacks the Nerd glyphs
+# that eza/bat/fzf/git-delta need for their icons, and the greeter is Terra-only.
+RUN dnf install -y ghostty jetbrainsmono-nerd-fonts noctalia-greeter && \
+    dnf clean all
+
+# Post-install: fish, greetd+noctalia-greeter, TLP, LibreWolf MIME default
 RUN /tmp/scripts/post-install.sh && rm -rf /tmp/scripts
 
 # Check the niri/Noctalia wiring and validate the shipped config

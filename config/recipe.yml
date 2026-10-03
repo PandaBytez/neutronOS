@@ -4,10 +4,16 @@
 # Terminal-focused, scrollable-tiling atomic DESKTOP for development:
 #   compositor -> niri (Fedora main)
 #   shell      -> Noctalia (Fedora main)
+#   terminal   -> ghostty (Terra -- not packaged in Fedora)
+#   greeter    -> noctalia-greeter (Terra), with tuigreet as fallback
 #   base       -> ublue-os/base-main, stock signed Fedora kernel
 #
-# Third-party source, deliberate and minimal:
-#   - Flathub, for the four flatpaks. Nothing else.
+# Third-party sources, both deliberate and both minimal:
+#   - Flathub, for the four flatpaks
+#   - the base `terra` repo, for ghostty, jetbrainsmono-nerd-fonts and
+#     noctalia-greeter ONLY. terra-release-extras is never installed;
+#     verify-desktop.sh asserts it and the mesa/nvidia/multimedia subrepos are
+#     absent, because that subrepo ships patched versions of Fedora packages.
 #
 # This name is the GHCR image path: ghcr.io/<owner>/neutronos
 # It must be lowercase: BlueBuild emits it as a Containerfile stage name
@@ -39,7 +45,7 @@ modules:
 
   # 2. Core packages. Everything here is in Fedora 44 main. niri pulls
   #    xwayland-satellite; ddcutil/cliphist/wlsunset are Noctalia's optional
-  #    dependencies.
+  #    dependencies. Ghostty is NOT here -- it comes from Terra in step 4.
   - type: rpm-ostree
     install:
       # Compositor, shell, greeter
@@ -47,7 +53,18 @@ modules:
       - noctalia
       - greetd
       - greetd-selinux
+      # tuigreet is the FALLBACK greeter, not the one in use. noctalia-greeter
+      # is the default, but it is a young project and it runs before
+      # authentication: if it fails to start, the machine has no login screen at
+      # all and needs a live USB to recover. tuigreet costs one small RPM and
+      # gives a one-line way back in. The README documents the switch.
       - tuigreet
+
+      # D-Bus is a hard requirement of noctalia-greeter-session (it drives the
+      # compositor wrapper), and polkit is what lets Noctalia's "Sync Now" copy
+      # wallpaper, palette and font to the login screen via pkexec.
+      - dbus-daemon
+      - polkit
 
       # Portals. niri ships /usr/share/xdg-desktop-portal/niri-portals.conf and
       # implements screencast via the GNOME backend, so both are required.
@@ -57,10 +74,6 @@ modules:
 
       # Shell
       - fish
-
-      # Terminal. Alacritty over ptyxis on purpose: niri's columns are the splits,
-      # so a terminal with its own split panes is redundant.
-      - alacritty
 
       # Session infrastructure, declared EXPLICITLY rather than inherited.
       #
@@ -158,10 +171,28 @@ modules:
       # daemon integration, and there is no power-profiles-daemon here.
       - tlp
 
-  # 3. Homebrew for user-managed CLI & TUI packages
+  # 3. Enable the Terra repository. Must come AFTER the Fedora install above and
+  #    BEFORE the Ghostty install below -- see the script header for why the
+  #    ordering is load-bearing rather than cosmetic.
+  - type: script
+    scripts:
+      - terra-repo.sh
+
+  # 4. The terminal, the font and the greeter. Separate from the main install
+  #    because these only exist in Terra: Ghostty is not packaged in Fedora at
+  #    all, Fedora's `jetbrains-mono-fonts` is the plain font without the Nerd
+  #    glyphs that eza/bat/fzf/git-delta need to render their icons, and the
+  #    greeter is Terra-only too.
+  - type: rpm-ostree
+    install:
+      - ghostty
+      - jetbrainsmono-nerd-fonts
+      - noctalia-greeter
+
+  # 5. Homebrew for user-managed CLI & TUI packages
   - type: brew
 
-  # 4. Pre-installed flatpaks
+  # 6. Pre-installed flatpaks
   - type: default-flatpaks
     configurations:
       - scope: system
@@ -172,24 +203,24 @@ modules:
           - it.mijorus.gearlever
           - com.ranfdev.DistroShelf
 
-  # 5. Default user skeleton: niri config, alacritty config, fish config
+  # 7. Default user skeleton: niri config, ghostty config, fish config
   - type: files
     files:
       - source: etc/skel
         destination: /etc/skel
 
-  # 6. Post-install adjustments. Runs after the flatpak module so the browser
+  # 8. Post-install adjustments. Runs after the flatpak module so the browser
   #    MIME default is not raced by the flatpak install.
   - type: script
     scripts:
       - post-install.sh
 
-  # 7. Seed the niri + Noctalia defaults
+  # 9. Seed the niri + Noctalia defaults
   - type: script
     scripts:
       - niri-defaults.sh
 
-  # 8. Fail the build if the desktop is not niri-only or the dev layer is absent
+  # 10. Fail the build if the desktop is not niri-only or the dev layer is absent
   - type: script
     scripts:
       - verify-desktop.sh

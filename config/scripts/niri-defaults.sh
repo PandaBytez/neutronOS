@@ -48,7 +48,7 @@ check "niri-session helper"      /usr/bin/niri-session
 check "Noctalia desktop entry"   /usr/share/applications/dev.noctalia.Noctalia.desktop
 check "skel niri config"         /etc/skel/.config/niri/config.kdl
 check "system niri config"       /etc/niri/config.kdl
-check "skel alacritty config"    /etc/skel/.config/alacritty/alacritty.toml
+check "skel ghostty config"     /etc/skel/.config/ghostty/config
 check "greetd config"            /etc/greetd/config.toml
 
 # The config niri will actually read for an account with no personal config.

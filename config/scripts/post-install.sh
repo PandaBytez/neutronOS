@@ -17,30 +17,75 @@ fi
 #    `usermod -s /usr/bin/fish $USER` (`chsh` does not exist on this base).
 sed -i 's|^SHELL=.*|SHELL=/usr/bin/fish|' /etc/default/useradd 2>/dev/null || true
 
-# 3. greetd + tuigreet. The base has no display manager at all (base-main logs
+# 3. greetd + the Noctalia Greeter. The base has no display manager at all
+#    (base-main logs
 #    in on getty), but drop the stale symlink defensively anyway: greetd's
 #    greeter becomes display-manager.service, and a dangling link left by
 #    another package would leave the display manager broken.
 systemctl disable gdm.service sddm.service 2>/dev/null || true
 rm -f /etc/systemd/system/display-manager.service
 mkdir -p /etc/greetd
-cat <<'EOF' > /etc/greetd/config.toml
+
+# Resolve the greeter's session wrapper at build time rather than hardcoding a
+# path. The upstream docs are explicit that the path depends on how it was
+# installed -- /usr/bin on packaged installs, NOT /usr/local -- and greetd runs a
+# bare command name, so a wrong path is a black screen at login.
+#
+# It must be `noctalia-greeter-session`, not `noctalia-greeter`: greetd launches
+# the session wrapper, which starts the bundled wlroots compositor that the
+# greeter UI runs inside. Pointing greetd straight at the UI binary leaves
+# WAYLAND_DISPLAY unset and the login screen never appears.
+GREETER_BIN=$(command -v noctalia-greeter-session || true)
+if [ -z "$GREETER_BIN" ]; then
+    echo "FAIL  noctalia-greeter-session not on PATH; the greeter cannot start" >&2
+    exit 1
+fi
+
+cat <<EOF > /etc/greetd/config.toml
 [terminal]
 vt = "1"
 
 [default_session]
-# tuigreet reads /usr/share/wayland-sessions and offers Niri. Sessions are not
-# filtered: niri.desktop is the only one in the image, so it is the only choice.
+# greetd runs $GREETER_BIN, which starts the bundled wlroots compositor and
+# runs the Noctalia login UI inside it. --session niri is set explicitly rather
+# than relying on "first discovered session": niri.desktop is the only session in
+# this image, but pinning it means a future second session cannot silently
+# become the default.
 #
 # The user here MUST be the one greetd's own /usr/lib/sysusers.d/greetd.conf
 # creates, which is "greetd" -- not "greeter", which is the name the upstream
 # greetd docs and the Arch wiki use and which does NOT exist on Fedora. Naming a
 # missing user makes greetd fail to setuid, so display-manager.service dies and
 # graphical.target has nothing to draw: a black screen with no error.
-command = "tuigreet --time --remember --asterisks"
+#
+# tuigreet is still installed as a fallback. To recover from a broken login
+# screen without a live USB, replace the command line above with:
+#   command = "tuigreet --time --remember --asterisks"
+# then `systemctl restart greetd`.
+command = "$GREETER_BIN -- --session niri"
 user = "greetd"
 EOF
 systemctl enable greetd.service
+
+# The greeter's own system setup. It creates /var/lib/noctalia-greeter/ and
+# greeter.toml, owned by the greetd session user. Its location has moved between
+# releases, so look for it rather than assuming a path.
+#
+# Note that /var is a separate partition in a bootc image, so anything this writes
+# there is NOT part of the deployment -- the directory is instead created at boot
+# by /usr/lib/tmpfiles.d/neutronos-greeter.conf, and the greeter falls back to
+# its built-in defaults if greeter.toml is absent (upstream's documented
+# behaviour). What matters from this script is the stdout, which is a
+# ready-to-paste greetd config block, so log it rather than discarding it.
+echo "==> Running the Noctalia greeter's system setup..."
+greeter_setup=$(find /usr -name 'setup_greeter_system.sh' -type f 2>/dev/null | head -1 || true)
+if [ -n "$greeter_setup" ]; then
+    "$greeter_setup" || echo "    setup script exited non-zero; continuing"
+    echo "    ran $greeter_setup (its output above is a greetd block; this image writes its own)"
+else
+    mkdir -p /var/lib/noctalia-greeter
+    echo "    setup script not found; relying on the tmpfiles.d drop-in for the state dir"
+fi
 
 # 4. TLP for laptop power management.
 #    A DE-less niri session ships no power daemon at all: GNOME's

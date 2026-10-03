@@ -57,13 +57,43 @@ absent '^displaylink'
 # --- that possible. base-main is a stable tag, so a future bump could quietly
 # --- bring any of this back. Assert its absence for the same reason the KDE and
 # --- GNOME bans above exist.
-absent '^(steam|proton|gamescope|gamemode|terra-|lutris|heroic)'
+#
+# The terra-* alternation is deliberately NARROW. We now install terra-release on
+# purpose, to get Ghostty and the Nerd Font, so a blanket `^terra-` ban would fail
+# every build. What must never come back are the patched, gaming-oriented builds
+# the old base shipped: terra-gamescope, terra-mangohud, terra-ddcutil, and the
+# subrepos that carry patched versions of Fedora packages.
+absent '^(steam|proton|gamescope|gamemode|lutris|heroic)'
+absent '^terra-(gamescope|mangohud|ddcutil|client|systemd|udisk$|release-(mesa|extras|nvidia|multimedia))'
+
+# --- Terra, the one third-party repo, scoped as narrowly as it can be.
+#
+# Only the base `terra` repo may be enabled. `terra-release-extras` is the
+# dangerous one: its own docs say it carries "packages which conflict with Fedora
+# packages in some way, such as being a patched version of the same package".
+# That is also the most plausible route by which the KF6 leftovers this image
+# used to strip would come back. Assert the repo file exists and the extras
+# subrepo is absent.
+if [ -f /etc/yum.repos.d/terra.repo ]; then
+    echo "ok    Terra repo enabled (ghostty + nerd fonts source)"
+else
+    echo "FAIL  /etc/yum.repos.d/terra.repo missing -- ghostty could not have been installed"
+    fail=1
+fi
+absent '^terra-release-(extras|mesa|nvidia|multimedia)$'
 
 # --- No leftover desktop from earlier iterations of this image.
-absent '^(cosmic-|ptyxis|vicinae|yazi|ghostty|Thunar)'
+# ghostty was on this list as a leftover from an earlier iteration and is now the
+# shipped terminal, so it was removed. Do not re-add it.
+absent '^(cosmic-|ptyxis|vicinae|yazi|Thunar)'
 
 # --- The session itself.
-present niri noctalia tuigreet alacritty greetd
+present niri noctalia ghostty greetd
+# tuigreet is the fallback login screen, kept installed on purpose: a broken
+# greeter means no way to log in without a live USB. post-install.sh documents the
+# one-line switch in the README.
+present tuigreet
+present noctalia-greeter dbus-daemon polkit
 present xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 present fish accountsservice cliphist wlsunset brightnessctl playerctl wl-clipboard
 
@@ -89,7 +119,7 @@ for f in /usr/share/wayland-sessions/niri.desktop \
          /etc/greetd/config.toml \
          /etc/skel/.config/niri/config.kdl \
          /etc/niri/config.kdl \
-         /etc/skel/.config/alacritty/alacritty.toml; do
+         /etc/skel/.config/ghostty/config; do
     if [ -e "$f" ]; then
         echo "ok    file: $f"
     else
@@ -97,6 +127,41 @@ for f in /usr/share/wayland-sessions/niri.desktop \
         fail=1
     fi
 done
+
+# --- The terminal binding. niri spawns the terminal by bare name, so a config
+# --- that still says "alacritty" after Alacritty was removed does not error --
+# --- Mod+T just silently does nothing. That is the exact failure the build gate
+# --- exists to catch, so assert the binary and the spawn line agree.
+present jetbrainsmono-nerd-fonts
+if command -v ghostty >/dev/null 2>&1; then
+    echo "ok    ghostty on PATH: $(command -v ghostty)"
+else
+    echo "FAIL  ghostty not on PATH"
+    fail=1
+fi
+for cfg in /etc/skel/.config/niri/config.kdl /etc/niri/config.kdl; do
+    [ -e "$cfg" ] || continue
+    if grep -qE 'spawn "ghostty"' "$cfg"; then
+        echo "ok    $cfg spawns ghostty"
+    else
+        echo "FAIL  $cfg does not spawn ghostty -- Mod+T would be dead"
+        fail=1
+    fi
+    if grep -q 'alacritty' "$cfg"; then
+        echo "FAIL  $cfg still references alacritty, which is no longer installed"
+        fail=1
+    fi
+done
+# The shipped ghostty config must name the Nerd Font, not the plain one. Fedora
+# also packages jetbrains-mono-fonts, so a careless downgrade would still leave a
+# font installed and merely break every icon in eza/bat/fzf output.
+if grep -qE '^font-family[[:space:]]*=[[:space:]]*JetBrainsMono Nerd Font' \
+        /etc/skel/.config/ghostty/config; then
+    echo "ok    ghostty config requests the Nerd Font"
+else
+    echo "FAIL  ghostty config does not request JetBrainsMono Nerd Font"
+    fail=1
+fi
 
 # The system niri config is the one every account reads when it has no personal
 # config, and the only thing that starts Noctalia. Assert both the file and the
@@ -191,10 +256,35 @@ else
     echo "FAIL  greetd.service is not enabled"
     fail=1
 fi
-if grep -q tuigreet /etc/greetd/config.toml; then
-    echo "ok    greetd uses tuigreet"
+if grep -q 'noctalia-greeter-session' /etc/greetd/config.toml; then
+    echo "ok    greetd uses noctalia-greeter-session"
 else
-    echo "FAIL  greetd config does not reference tuigreet"
+    echo "FAIL  greetd config does not reference noctalia-greeter-session"
+    fail=1
+fi
+# greetd must run the SESSION wrapper, not the UI binary. The wrapper starts the
+# bundled wlroots compositor the UI runs inside; pointing greetd at
+# `noctalia-greeter` directly leaves WAYLAND_DISPLAY unset and the login screen
+# never appears.
+#
+# Compare the BASENAME of the resolved command rather than pattern-matching the
+# file: post-install.sh writes an absolute path, so a regression to
+# command = "/usr/bin/noctalia-greeter" would not match a pattern anchored on
+# the bare name.
+greeter_bin=$(sed -n 's/^command[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    /etc/greetd/config.toml | awk '{print $1}' | xargs -r basename 2>/dev/null || true)
+if [ "$greeter_bin" = "noctalia-greeter" ]; then
+    echo "FAIL  greetd runs the greeter UI directly; it must run noctalia-greeter-session"
+    fail=1
+else
+    echo "ok    greetd does not run the bare greeter binary (runs: ${greeter_bin:-<unparsed>})"
+fi
+# --session niri is pinned so a future second session cannot silently become the
+# default. Resolve it the same way the compositor's own session file is checked.
+if grep -qE 'command[[:space:]]*=.*--session niri' /etc/greetd/config.toml; then
+    echo "ok    greetd pins --session niri"
+else
+    echo "FAIL  greetd does not pin --session niri"
     fail=1
 fi
 
@@ -214,11 +304,20 @@ else
     fail=1
 fi
 
-# The greeter's state directory, created at boot by greetd's tmpfiles.d.
-if [ -d /var/lib/greetd ]; then
-    echo "ok    /var/lib/greetd present"
+# The greeter's state directory is created at BOOT, so assert the tmpfiles.d
+# drop-in rather than the directory. Checking the directory here would pass in the
+# build container -- /var is writable during a build -- while telling us nothing
+# about the deployed system, because /var is a separate partition in a bootc image
+# and build-time content there does not ship.
+if [ -f /usr/lib/tmpfiles.d/neutronos-greeter.conf ]; then
+    if grep -q '^d /var/lib/noctalia-greeter' /usr/lib/tmpfiles.d/neutronos-greeter.conf; then
+        echo "ok    tmpfiles.d creates /var/lib/noctalia-greeter at boot"
+    else
+        echo "FAIL  neutronos-greeter.conf does not create /var/lib/noctalia-greeter"
+        fail=1
+    fi
 else
-    echo "FAIL  /var/lib/greetd missing (greetd tmpfiles.d should create it)"
+    echo "FAIL  /usr/lib/tmpfiles.d/neutronos-greeter.conf missing -- the greeter has no state dir on the deployed system"
     fail=1
 fi
 
