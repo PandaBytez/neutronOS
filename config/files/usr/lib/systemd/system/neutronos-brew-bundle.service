@@ -1,0 +1,25 @@
+[Unit]
+Description=Install neutronOS's Homebrew bundle
+Documentation=man:brew(1)
+# brew-setup.service is what copies the Homebrew tree out of /usr/share/homebrew
+# into /var/home/linuxbrew, so it has to have run first. It cannot be done at
+# BUILD time instead: /var is empty on a fresh deployment, so anything installed
+# into /var/home/linuxbrew during the build is discarded rather than shipped.
+# That is the same trap as /usr/lib/tmpfiles.d and the greeter state directory.
+After=brew-setup.service
+Requires=brew-setup.service
+# Stamped on success only, so a bundle that failed because the machine had no
+# network yet is retried on the next boot instead of being silently skipped
+# forever. This is a oneshot that runs at every boot until the stamp exists.
+ConditionPathExists=!/var/lib/neutronos/brew-bundle-done
+
+[Service]
+Type=oneshot
+# Homebrew refuses to run as root, and the owner of the /home/linuxbrew tree is
+# UID 1000 -- which is the first account on the machine, because neutronos-install
+# creates it with useradd. So "run brew as UID 1000" is deterministic here rather
+# than a guess about account names or ordering.
+ExecStart=/usr/bin/bash -c 'user=$(getent passwd 1000 | cut -d: -f1); [ -n "$user" ] || exit 0; runuser -u "$user" -- /home/linuxbrew/bin/brew bundle --file=/usr/share/homebrew/Brewfile && mkdir -p /var/lib/neutronos && touch /var/lib/neutronos/brew-bundle-done'
+
+[Install]
+WantedBy=multi-user.target

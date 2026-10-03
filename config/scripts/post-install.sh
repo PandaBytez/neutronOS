@@ -67,6 +67,24 @@ user = "greetd"
 EOF
 systemctl enable greetd.service
 
+# 3b. The installer, which starts itself on tty1 on the live ISO.
+#
+# Enabled unconditionally and gated by ConditionKernelCommandLine=neutronos.live,
+# so on an installed system the job is skipped and this costs nothing: it exists
+# so that booting the ISO needs no command at all. Its mirror image is
+# greetd.service.d/10-neutronos-live.conf, which skips the greeter on the ISO so
+# the two do not fight over vt1. Do not enable this on any other condition --
+# the unit takes the console, and a wrong condition means a machine whose console
+# is a TUI installer.
+systemctl enable neutronos-install.service
+
+# 3c. The Homebrew bundle. Installs whatever /usr/share/homebrew/Brewfile lists --
+# today just lazygit, which is not packaged for Fedora -- on the first boot, as the
+# first user, because Homebrew refuses to run as root. Doing it here rather than
+# at build time is forced: /var is empty on a fresh deployment, so a brew
+# installation made during the build would not survive to be there.
+systemctl enable neutronos-brew-bundle.service
+
 # The greeter's own system setup. It creates /var/lib/noctalia-greeter/ and
 # greeter.toml, owned by the greetd session user. Its location has moved between
 # releases, so look for it rather than assuming a path.

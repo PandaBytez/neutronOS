@@ -1,0 +1,19 @@
+# Homebrew bundle -- everything in this image that no Fedora repository carries.
+#
+# `brew bundle --file=/usr/share/homebrew/Brewfile` installs all of it, and
+# neutronos-brew-bundle.service does exactly that, once, on first boot. Add a tool
+# here rather than reaching for a third-party RPM repo.
+#
+# Two rules, both learned the hard way by a broken build:
+#   1. Only what Fedora does not package. Anything Fedora has belongs in the
+#      recipe's rpm-ostree module, where it gets security updates from Fedora
+#      instead of from whatever a brew tap happens to build.
+#   2. Nothing that needs root, setuid, or a daemon. Homebrew refuses to run as
+#      root, so this is a per-user tool list and nothing more.
+#
+# `brew install <formula>` still works and is the right answer for anything only
+# you want; this file is for what the image should always have.
+
+# A git TUI. Not packaged for Fedora at all -- same reason Ghostty is not -- and
+# it used to be a build-breaking `lazygit` line in the recipe until it moved here.
+brew "lazygit"

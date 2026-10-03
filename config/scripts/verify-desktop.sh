@@ -401,6 +401,171 @@ else
     echo "ok    no Plasma/GNOME/Hyprland/COSMIC session files"
 fi
 
+# --- The installer, /usr/bin/neutronos-install --------------------------------
+#
+# This is a shipped feature, not a convenience: it is how a machine gets a
+# neutronOS on it. Assert the pieces it depends on, because every one of them
+# fails halfway through wiping a disk if it is missing, which is the worst
+# possible time to find out.
+present cryptsetup btrfs-progs dosfstools tpm2-tools newt
+
+# newt is the RPM that ships /usr/bin/whiptail, and whichname the RPM is called
+# is not the capability we care about. Assert the binary, the way the Mesa and
+# ddcutil checks assert the capability rather than the provider.
+for tool in whiptail bootc; do
+    if path=$(command -v "$tool" 2>/dev/null || true) && [ -n "$path" ]; then
+        echo "ok    installer tool: $tool -> $path"
+    else
+        echo "FAIL  installer tool not on PATH: $tool"
+        fail=1
+    fi
+done
+
+# The installer passes these to `bootc install to-filesystem`; if a bootc upgrade
+# renames or drops one, the installer fails at install time rather than at build
+# time, so assert the interface here instead.
+tofs_help=$(bootc install to-filesystem --help 2>&1 || true)
+for flag in --karg --root-mount-spec --boot-mount-spec --skip-finalize; do
+    found=$(printf '%s\n' "$tofs_help" | grep -F -c -- "$flag" || true)
+    if [ "${found:-0}" -gt 0 ]; then
+        echo "ok    bootc install to-filesystem supports $flag"
+    else
+        echo "FAIL  bootc install to-filesystem no longer supports $flag; the installer needs it"
+        fail=1
+    fi
+done
+if bootc install finalize --help >/dev/null 2>&1; then
+    echo "ok    bootc install finalize exists"
+else
+    echo "FAIL  bootc install finalize missing; the installer cannot finalize the target"
+    fail=1
+fi
+
+# Which bootloader and root filesystem this image hands `bootc install` is the
+# image's business, not the installer's -- it adapts. Log the resolved config so
+# a base bump that changes it is visible in the build log.
+install_cfg=$(cat /usr/lib/bootc/install/*.toml /etc/bootc/install/*.toml 2>/dev/null | tr '\n' ' ' || true)
+echo "info  bootc install config:${install_cfg:- <none, bootc defaults apply>}"
+
+# --- Anything not in Fedora comes from Homebrew --------------------------------
+#
+# `lazygit` is not packaged for Fedora, and asking rpm-ostree for it fails the
+# whole build with "Packages not found". It is a Homebrew formula instead, applied
+# in one batch from the image's Brewfile rather than by asking users to type
+# `brew install` after every rebase.
+brewfile=/usr/share/homebrew/Brewfile
+if [ -f "$brewfile" ] && grep -Eq '^brew "lazygit"' "$brewfile"; then
+    echo "ok    Homebrew bundle carries the non-Fedora CLI tools: $brewfile"
+else
+    echo "FAIL  $brewfile missing or has no lazygit -- nothing provides it, since Fedora does not"
+    fail=1
+fi
+if systemctl is-enabled neutronos-brew-bundle.service >/dev/null 2>&1; then
+    echo "ok    neutronos-brew-bundle.service enabled"
+else
+    echo "FAIL  neutronos-brew-bundle.service not enabled; the Brewfile would never be applied"
+    fail=1
+fi
+
+# newuidmap/newgidmap are what rootless podman and the first `distrobox enter`
+# need. Fedora puts them in shadow-utils; `uidmap` is the Debian package name and
+# does not exist in Fedora, which is what broke the build. Assert the capability
+# rather than a package name, so a base bump that moves the binaries fails the
+# build instead of breaking every container silently.
+if command -v newuidmap >/dev/null 2>&1; then
+    echo "ok    newuidmap present: $(command -v newuidmap) (rootless podman)"
+else
+    echo "FAIL  newuidmap missing -- rootless podman and distrobox cannot map subordinate UIDs"
+    fail=1
+fi
+
+if [ -x /usr/bin/neutronos-install ]; then
+    echo "ok    installer present and executable: /usr/bin/neutronos-install"
+else
+    # BlueBuild's files module has no mode key, so the committed git exec bit is
+    # the only thing that makes this executable in the CI image.
+    echo "FAIL  /usr/bin/neutronos-install missing or not executable"
+    fail=1
+fi
+
+# The live ISO has to start the installer by itself, with nothing typed. That
+# works by a systemd unit taking tty1, gated on the kernel argument that
+# disk_config/live.toml appends, while the greeter is condition-skipped so the two
+# do not fight over the VT. Both halves are required: with only the unit, the
+# greeter races it; with only the drop-in, there is no installer at all.
+install_unit=/usr/lib/systemd/system/neutronos-install.service
+if [ -f "$install_unit" ]; then
+    echo "ok    installer service present: $install_unit"
+else
+    echo "FAIL  $install_unit missing; the live ISO would boot to nothing"
+    fail=1
+fi
+# systemctl is-enabled is a symlink check and works in the build container, which
+# is how the greetd and tlp checks above already work. `systemctl cat` is not used
+# here on purpose: it wants a running systemd.
+if systemctl is-enabled neutronos-install.service >/dev/null 2>&1; then
+    echo "ok    neutronos-install.service enabled"
+else
+    echo "FAIL  neutronos-install.service not enabled; the live ISO would not start it"
+    fail=1
+fi
+greetd_live_dropin=/usr/lib/systemd/system/greetd.service.d/10-neutronos-live.conf
+if [ -f "$greetd_live_dropin" ] &&
+    grep -q '^ConditionKernelCommandLine=!neutronos.live' "$greetd_live_dropin"; then
+    echo "ok    greeter skipped on the live ISO: $greetd_live_dropin"
+else
+    echo "FAIL  $greetd_live_dropin missing or wrong -- the greeter would fight the installer for vt1"
+    fail=1
+fi
+if grep -q 'TTYPath=/dev/tty1' "$install_unit"; then
+    echo "ok    installer service takes tty1 (whiptail needs a controlling terminal)"
+else
+    echo "FAIL  $install_unit has no TTYPath=/dev/tty1; whiptail will fail to start"
+    fail=1
+fi
+# The single source of truth for "this is the live session", and the one thing
+# that must agree between the ISO build and the unit.
+if [ -f disk_config/live.toml ] && grep -q 'neutronos.live=1' disk_config/live.toml; then
+    echo "ok    disk_config/live.toml appends the marker the installer unit looks for"
+else
+    echo "skip  disk_config/live.toml not in the build context (only present in a source checkout)"
+fi
+# The single source of truth for "this is the live session", and the one thing
+# that must agree between the ISO build and the unit.
+if [ -f disk_config/live.toml ] && grep -q 'neutronos.live=1' disk_config/live.toml; then
+    echo "ok    disk_config/live.toml appends the marker the installer unit looks for"
+else
+    echo "skip  disk_config/live.toml not in the build context (only present in a source checkout)"
+fi
+
+# TPM2 auto-unlock is documented as `sudo luks-enable-tpm2-autounlock` after the
+# first boot. That script comes from ublue-os-luks in the base, and it is the
+# whole reason the installer does not ship its own enrolment code.
+if command -v luks-enable-tpm2-autounlock >/dev/null 2>&1; then
+    echo "ok    TPM2 auto-unlock available (ublue-os-luks)"
+else
+    echo "FAIL  luks-enable-tpm2-autounlock missing -- ublue-os-luks is not in the base"
+    fail=1
+fi
+
+# The initramfs is what actually unlocks the disk at boot, and dracut-install
+# silently omits the tpm2-tss module when its userspace binaries are absent from
+# the image -- so the enrolment script would appear to work and the disk would
+# never auto-unlock. Check the initramfs, not just the package.
+# Per the README: never `cmd | grep -q` under pipefail, always command substitution.
+initramfs=$(ls -1 /usr/lib/modules/*/initramfs.img 2>/dev/null | head -1 || true)
+if [ -z "$initramfs" ]; then
+    echo "skip  no /usr/lib/modules/*/initramfs.img; cannot check for tpm2-tss"
+else
+    modules=$(lsinitrd "$initramfs" 2>/dev/null | grep -F 'tpm2-tss' || true)
+    if [ -n "$modules" ]; then
+        echo "ok    initramfs carries tpm2-tss: $initramfs"
+    else
+        echo "FAIL  $initramfs has no tpm2-tss module; TPM2 auto-unlock cannot work"
+        fail=1
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "==> Desktop verification FAILED"
     exit 1

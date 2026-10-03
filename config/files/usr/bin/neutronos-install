@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# neutronOS installer -- run as root: `sudo neutronos-install`
+#
+# Writes this image to a disk with an encrypted root, using the same layout a
+# Universal Blue install produces: ESP + unencrypted /boot + LUKS2/btrfs root.
+#
+# WHY THIS IS NOT `bootc install to-disk`
+#   to-disk can only offer `--block-setup tpm2-luks`, which seals the volume key
+#   to the TPM with NO passphrase: the disk then cannot be unlocked if the TPM
+#   reseeds or the firmware changes, and there is no recovery key. bootc upstream
+#   says it should not be recommended for new deployments, and LUKS-with-
+#   passphrase is still an open upstream request (bootc#1329; see also #421 and
+#   #2089). Upstream's own guidance is to set encryption up independently and
+#   point `bootc install to-filesystem` at the result, which is what Anaconda's
+#   bootc kickstart does and what this script does.
+#
+# WHY /boot IS NOT ENCRYPTED, AND WHY THERE IS A BIOS BOOT PARTITION
+#   This base boots with GRUB + BLS (the bootc package ships the BLS
+#   /usr/lib/kernel/install.conf layout) and GRUB cannot read a LUKS volume, so
+#   the kernels and their BLS entries have to live on an unencrypted partition.
+#   The 1 MiB BIOS boot partition exists because bootupd still requires one on
+#   x86_64 (coreos/bootupd#1067), which is why `bootc install to-disk` creates one
+#   too and why the osbuild disk.yaml example leads with it.
+#
+# WHY btrfs
+#   It is the Universal Blue / Fedora Atomic default, and Bazzite's installer
+#   refuses anything else for /. ostree keeps its deployment in a subvolume, so
+#   the root is mounted from /ostree/root and that is passed as rootflags=.
+#
+# AFTER THE FIRST BOOT
+#   The disk is unlocked by passphrase. To make later boots passwordless, run
+#   the script the base already ships (ublue-os-luks):
+#       sudo luks-enable-tpm2-autounlock
+#   It seals the volume key to PCR 7+14 (Secure Boot + MokList). Do that from
+#   the installed system, never from here: an installer measures a different
+#   PCR 7 than the installed system boots with, so enrolling now seals against
+#   a state that never recurs and the disk would never unlock again. Keep the
+#   passphrase regardless -- a firmware update or a MOK change breaks the seal.
+#
+# HOW YOU GOT HERE
+#   On the live ISO (disk_config/live.toml appends neutronos.live=1 to the kernel
+#   command line) neutronos-install.service starts this on tty1 by itself, so a
+#   fresh machine needs nothing typed. Run it by hand from an already-installed
+#   neutronOS to reinstall, which is why neither path is hardcoded as the only one.
+set -euo pipefail
+
+# GPT partition type GUIDs. sfdisk's default type under "label: gpt" is plain
+# Linux data, which is right for the LUKS partition (root is found by the
+# explicit root=UUID= karg, not by partition type), but the bootloader locates the
+# other three by type, so they have to be spelled out.
+readonly BIOS_TYPE=21686148-6449-6E6F-744E-656564454649 # BIOS boot, x86_64 only
+readonly ESP_TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B # EFI system partition
+readonly BOOT_TYPE=BC13C2FF-59E6-4262-A352-B275FD6F7172 # XBOOTLDR
+readonly ESP_SIZE=600M # what the uBlue ISOs ship
+readonly BOOT_SIZE=1G
+
+readonly LOG=/var/log/neutronos-install.log
+readonly MAPPER=cryptroot
+readonly TARGET=/mnt/ostree/root
+
+die() {
+    printf '\nneutronos-install: %s\n' "$*" >&2
+    exit 1
+}
+
+log() {
+    printf '%s  %s\n' "$(date +%H:%M:%S)" "$*"
+    printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOG" 2>/dev/null || true
+}
+
+# whiptail draws the box on stdout and writes the answer to stderr.
+ask() {
+    whiptail --title "neutronOS installer" "$@" 3>&1 1>&2 2>&3
+}
+
+cleanup() {
+    umount -R "$TARGET" 2>/dev/null || true
+    umount /mnt/sysroot 2>/dev/null || true
+    cryptsetup close "$MAPPER" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- preflight --
+[ "$(id -u)" -eq 0 ] || die "run as root: sudo neutronos-install"
+[ -t 0 ] && [ -t 1 ] || die "needs a terminal"
+
+for cmd in bootc whiptail cryptsetup mkfs.btrfs btrfs mkfs.fat mkfs.ext4 \
+    sfdisk lsblk blkid uuidgen udevadm; do
+    command -v "$cmd" >/dev/null 2>&1 || die "$cmd is missing from this image"
+done
+
+# The ISO appends this to its kernel command line, and it is only read here to
+# decide whether a reboot can be offered (see the end). No pipeline: `cmd | grep -q`
+# under pipefail exits on first match, the producer takes SIGPIPE and the pipeline
+# reports failure for a successful match.
+live=0
+cmdline=$(cat /proc/cmdline)
+if [ "${cmdline#* neutronos.live=}" != "$cmdline" ]; then live=1; fi
+
+log "starting; full output is also going to $LOG"
+
+# ------------------------------------------------------------ disk selection --
+# Hide the disk this system is running from. On the live ISO that is the USB stick,
+# and offering it would be the worst possible suggestion; on an installed system it
+# is the disk being erased out from under us.
+root_src=$(findmnt -no SOURCE /sysroot 2>/dev/null | head -1 | cut -d'[' -f1 || true)
+running_disk=$(lsblk -ndo PKNAME "$root_src" 2>/dev/null | head -1 || true)
+
+menu=()
+while read -r name size model; do
+    if [ "$name" = "$running_disk" ]; then continue; fi
+    menu+=("/dev/$name" "$(printf '%-14s %7s  %s' "/dev/$name" "$size" "$model")")
+done < <(lsblk -d -o NAME,SIZE,MODEL)
+
+[ "${#menu[@]}" -ge 2 ] || die "no candidate disks found (is one attached?)"
+
+disk=$(ask --backtitle "This erases a disk" \
+    --menu "Install neutronOS onto which disk?" 20 74 8 "${menu[@]}") \
+    || die "nothing selected"
+
+# Hard refusal, independent of the menu above: anything with a mounted partition
+# is a disk this session depends on. On the live ISO that catches the USB stick
+# even if the filter above failed to identify it, because the ISO is mounted from
+# it. `--mountpoint` so that a filesystem carrying no mountpoint at all -- swap,
+# LVM members, an unmounted ESP -- does not slip past.
+mounted=$(lsblk -nrpo MOUNTPOINT --mountpoint "$(basename "$disk")" | grep -v '^$' || true)
+if [ -n "$mounted" ]; then
+    die "$disk has mounted partitions and is in use by this session: $mounted"
+fi
+
+size=$(lsblk -dno SIZE "$(basename "$disk")" 2>/dev/null || true)
+model=$(lsblk -dno MODEL "$(basename "$disk")" 2>/dev/null || true)
+ask --backtitle "This erases a disk" --defaultno --yes-button "Erase it" \
+    --no-button "Cancel" \
+    --yesno "Erase $disk ($size, $model)?\n\nEverything on it is lost, permanently." 10 60 \
+    || die "cancelled"
+
+# ----------------------------------------------------------------- questions --
+while :; do
+    user=$(ask --inputbox "Username for the first account" 9 70 "deffi") || die "cancelled"
+    # What useradd(8) accepts, so a typo fails here rather than inside the chroot.
+    # No `grep -q` anywhere: under pipefail it exits on first match, the producer
+    # takes SIGPIPE and the pipeline reports failure for a successful match.
+    ok=$(printf '%s' "$user" | grep -E '^[a-z_][a-z0-9_-]*\$?$' || true)
+    if [ -n "$ok" ]; then break; fi
+    log "'$user' is not a valid username"
+done
+
+hostname=$(ask --inputbox "Hostname" 9 70 "neutronos") || die "cancelled"
+ok=$(printf '%s' "$hostname" | grep -E '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$' || true)
+[ -n "$ok" ] || die "'$hostname' is not a valid hostname"
+
+while :; do
+    pass=$(ask --passwordbox "Encryption passphrase for $disk\n\nThis unlocks the disk at boot. There is no recovery key." 11 70) || die "cancelled"
+    [ -n "$pass" ] || { log "passphrase must not be empty"; continue; }
+    confirm=$(ask --passwordbox "Encryption passphrase, again" 9 70) || die "cancelled"
+    if [ "$pass" = "$confirm" ]; then break; fi
+    log "passphrases did not match"
+done
+
+# ------------------------------------------------------------------- install --
+bios="${disk}1"
+esp="${disk}2"
+boot="${disk}3"
+root_part="${disk}4"
+
+trap cleanup EXIT
+
+log "partitioning $disk: BIOS boot, ESP ${ESP_SIZE}, /boot ${BOOT_SIZE}, rest LUKS2"
+sfdisk --wipe always "$disk" >/dev/null <<EOF
+label: gpt
+,1MiB
+,${ESP_SIZE}
+,${BOOT_SIZE}
+,
+EOF
+sfdisk --part-type "$disk" 1 "$BIOS_TYPE" >/dev/null
+sfdisk --part-type "$disk" 2 "$ESP_TYPE" >/dev/null
+sfdisk --part-type "$disk" 3 "$BOOT_TYPE" >/dev/null
+udevadm settle
+
+for p in "$bios" "$esp" "$boot" "$root_part"; do
+    [ -b "$p" ] || die "$p did not appear after partitioning -- re-run once the kernel has reread the table"
+done
+
+log "formatting the ESP and /boot"
+mkfs.fat -n ESP "$esp" >/dev/null
+mkfs.ext4 -q -L boot "$boot"
+
+log "creating the LUKS2 container (argon2id)"
+cryptsetup luksFormat --type luks2 --pbkdf argon2id --key-file=- "$root_part" <<<"$pass"
+cryptsetup open --key-file=- "$root_part" "$MAPPER" <<<"$pass"
+
+luks_uuid=$(blkid -s UUID -o value "/dev/mapper/$MAPPER")
+fs_uuid=$(uuidgen)
+log "LUKS UUID $luks_uuid"
+
+log "creating btrfs and the /ostree/root subvolume"
+mkfs.btrfs -q -f -U "$fs_uuid" -L sysroot "/dev/mapper/$MAPPER"
+mkdir -p /mnt/sysroot/ostree "$TARGET"
+mount "/dev/mapper/$MAPPER" /mnt/sysroot
+btrfs subvolume create /mnt/sysroot/ostree/root >/dev/null
+mount -o subvol=/ostree/root "/dev/mapper/$MAPPER" "$TARGET"
+
+log "writing the system with bootc; this takes a minute"
+bootc install to-filesystem \
+    --karg=rd.luks.uuid="luks-$luks_uuid" \
+    --karg=rootflags=subvol=/ostree/root \
+    --root-mount-spec "UUID=$fs_uuid" \
+    --boot-mount-spec LABEL=boot \
+    --skip-finalize \
+    "$TARGET" 2>&1 | tee -a "$LOG"
+
+# --------------------------------------------------------- machine-local /etc --
+# This has to be the *deployment's* /etc, not the physical root's: at boot the
+# deployment's /etc is what persists, and it is rebuilt from /usr/etc on every
+# boot rather than from the ostree rootfs. Writing to /mnt/sysroot/etc would be
+# silently discarded.
+mkdir -p "$TARGET/etc"
+cat >"$TARGET/etc/crypttab" <<EOF
+# Written by neutronos-install. x-initrd.attach makes the initramfs unlock this
+# volume from rd.luks.uuid= above; discard is the only safe mode for a
+# device-mapper LUKS2 volume on SSD. The mapper name has to survive switch-root,
+# and the initramfs and the running system have to agree on it -- rd.luks.uuid is
+# what makes them agree.
+$MAPPER UUID=$luks_uuid none luks,discard,x-initrd.attach
+EOF
+
+# --------------------------------------------------------- the first account --
+# bootc deliberately creates no accounts, so without this the greeter comes up
+# with nobody to log in as. This step is the whole reason a third-party installer
+# exists at all.
+for d in dev proc sys; do mount --bind "/$d" "$TARGET/$d"; done
+
+log "creating the account '$user'"
+printf '%s\n' "$hostname" >"$TARGET/etc/hostname"
+chroot "$TARGET" useradd -m -G wheel -s /usr/bin/fish "$user"
+# `chsh` does not exist on this base, so -s above is the supported equivalent.
+chroot "$TARGET" chpasswd <<<"$user:$pass"
+# useradd writes the passwd/shadow entries but not their SELinux labels.
+chroot "$TARGET" restorecon -R /etc /var/home >/dev/null 2>&1 || true
+
+# No BLS entries means no bootable kernel no matter what bootc reported, and that
+# failure would otherwise only show up as a black screen after the reboot. Checked
+# BEFORE finalize, while the boot partition is still definitely mounted where
+# bootc put it. Non-fatal either way: the log is the source of truth.
+bls=$(find "$TARGET/boot/loader/entries" /mnt/sysroot/boot/loader/entries \
+    -maxdepth 1 -name '*.conf' 2>/dev/null | head -1 || true)
+if [ -z "$bls" ]; then
+    log "WARNING: no BLS entries under /boot/loader/entries. Bootloader"
+    log "         installation may have failed -- read $LOG before rebooting."
+else
+    log "BLS entry: $bls"
+fi
+
+log "finalizing"
+bootc install finalize "$TARGET" 2>&1 | tee -a "$LOG"
+
+cleanup
+trap - EXIT
+
+# From the live ISO the stick has to come out first: the firmware will happily
+# boot it again, and the ISO has no way to prefer the disk it just installed.
+# That is the same instruction Omarchy gives, for the same reason.
+if [ "$live" -eq 1 ]; then
+    ask --title "neutronOS installer" \
+        --msgbox "Installed $user on $disk, encrypted.\n\nRemove the USB stick now, then reboot.\n\nAfter rebooting, run:\n\n  sudo luks-enable-tpm2-autounlock\n\nto make later boots passwordless." 14 68
+    exit 0
+fi
+
+if ask --title "neutronOS installer" --yes-button "Reboot now" --no-button "Later" \
+    --yesno "Installed $user on $disk, encrypted.\n\nReboot now?\n\nAfter rebooting, run:\n\n  sudo luks-enable-tpm2-autounlock\n\nto make later boots passwordless." 13 66; then
+    sync
+    systemctl reboot
+fi

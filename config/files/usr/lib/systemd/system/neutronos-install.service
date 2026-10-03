@@ -1,0 +1,36 @@
+[Unit]
+Description=neutronOS installer
+Documentation=man:bootc-install-to-filesystem(8)
+# The only thing that distinguishes the live ISO from an installed system, and
+# the reason this unit cannot hijack the console of a working machine: it is the
+# kernel argument disk_config/live.toml appends to the ISO's boot entry. If that
+# argument is missing from the ISO the unit is simply skipped and you land on the
+# greeter instead, so a broken ISO is obvious rather than mysterious.
+ConditionKernelCommandLine=neutronos.live
+# Take the console. getty@tty1 would otherwise sit on top of us, and on the live
+# ISO the greeter is disabled by greetd.service.d/10-neutronos-live.conf rather
+# than fought over here.
+Conflicts=getty@tty1.service display-manager.service
+After=local-fs.target systemd-tty-setup.service
+
+[Service]
+# TTYPath makes systemd hand this unit tty1 as its controlling terminal, and
+# StandardInput=tty then gives it /dev/tty1. That is what whiptail needs: it
+# initialises a curses screen on /dev/tty, so without a controlling terminal it
+# fails outright. This is the same mechanism systemd-firstboot uses.
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+# idle, not simple: this must not fight the boot for the console, and there is
+# nothing for the user to do until the system has settled anyway.
+Type=idle
+ExecStart=/usr/bin/neutronos-install
+# The installer exits non-zero when the user cancels, and there is nothing to
+# retry, so no Restart=.
+
+[Install]
+# multi-user, not graphical: this image has no display manager in the live
+# session (greetd is condition-skipped), and graphical.target may never be
+# reached. Conflicts= stops getty@tty1 if it is already running.
+WantedBy=multi-user.target

@@ -115,6 +115,33 @@ modules:
       - playerctl
       - wl-clipboard
 
+      # --- Installer (/usr/bin/neutronos-install) ---
+      #
+      # Named explicitly for the same reason as the session infrastructure above:
+      # the installer is a shipped feature, so if a base bump drops one of these
+      # the gate should fail instead of the install failing on someone's laptop
+      # halfway through wiping a disk. Every one of them is Fedora main.
+      #
+      # newt is the RPM that ships /usr/bin/whiptail, which drives the prompts.
+      # The rest are what the installer runs: cryptsetup for the LUKS2 container,
+      # btrfs-progs for the root filesystem and its /ostree/root subvolume,
+      # dosfstools for the ESP. btrfs is the Universal Blue / Fedora Atomic
+      # default root filesystem, and it is what Bazzite's installer requires.
+      - newt
+      - cryptsetup
+      - btrfs-progs
+      - dosfstools
+
+      # TPM2 userspace. `luks-enable-tpm2-autounlock`, which the base already
+      # ships via ublue-os-luks, seals the root volume key to PCR 7+14 with
+      # systemd-cryptenroll. That needs tpm2-tools, and -- this is the part that
+      # is easy to miss -- the dracut tpm2-tss module can only be added to the
+      # initramfs if the userspace binaries exist at build time, because
+      # dracut-install silently omits a module whose files it cannot find. So
+      # without this package the enrolment script appears to succeed and the
+      # disk never auto-unlocks. verify-desktop.sh checks the initramfs itself.
+      - tpm2-tools
+
       # --- Development layer ---
       #
       # Containers. This is an immutable image: native toolchains never update
@@ -209,11 +236,16 @@ modules:
           - it.mijorus.gearlever
           - com.ranfdev.DistroShelf
 
-  # 7. Default user skeleton: niri config, ghostty config, fish config
+  # 7. Default user skeleton: niri config, ghostty config, fish config, and
+  #    /usr/bin/neutronos-install. The `usr` entry is not optional: /etc/skel
+  #    alone left /usr/lib/tmpfiles.d/neutronos-greeter.conf out of the image,
+  #    which verify-desktop.sh then fails on.
   - type: files
     files:
       - source: etc/skel
         destination: /etc/skel
+      - source: usr
+        destination: /usr
 
   # 8. Post-install adjustments. Runs after the flatpak module so the browser
   #    MIME default is not raced by the flatpak install.
