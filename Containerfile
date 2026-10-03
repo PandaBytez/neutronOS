@@ -35,12 +35,17 @@ RUN dnf install -y \
       NetworkManager \
       ddcutil accountsservice cliphist wlsunset brightnessctl playerctl \
       wl-clipboard \
-      podman podman-docker uidmap distrobox \
+      podman podman-docker distrobox \
       gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config gdb \
       git git-delta git-lfs ripgrep fd-find bat eza tree fzf zoxide direnv \
-      tmux lazygit gh jq yq shellcheck shfmt btop sqlite man-pages \
+      tmux gh jq yq shellcheck shfmt btop sqlite man-pages \
       tlp && \
     dnf clean all
+
+# Two packages the old gaming image had are deliberately absent, because neither
+# exists in Fedora: `uidmap` (Debian's name for the newuidmap/newgidmap binaries,
+# which Fedora puts in shadow-utils) and `lazygit` (not packaged for Fedora;
+# `brew install lazygit`). Naming them fails the build with "Packages not found".
 
 # Enable the Terra repository, which carries Ghostty, the Nerd Font build and the
 # Noctalia greeter.

@@ -123,10 +123,14 @@ modules:
       # instructions in docs work verbatim.
       - podman
       - podman-docker
-      # uidmap provides newuidmap, which rootless podman needs for user-namespace
-      # mapping. Without it the first `distrobox enter` fails in a way that looks
-      # like a distrobox bug rather than a missing package.
-      - uidmap
+      # There is deliberately NO `uidmap` here. Fedora puts newuidmap and
+      # newgidmap in shadow-utils, which the base already has; `uidmap` is the
+      # *Debian* package name for the same binaries and does not exist in Fedora at
+      # all. Naming it broke the build outright -- "Packages not found: uidmap" --
+      # because it had been carried over from the gaming base, whose extra repos
+      # happened to carry it. verify-desktop.sh asserts `newuidmap` on PATH
+      # instead: the capability rootless podman actually needs, independent of
+      # which RPM provides it.
       - distrobox
 
       # Native build tools. NOT optional despite the container strategy:
@@ -140,7 +144,10 @@ modules:
       - pkgconf-pkg-config
       - gdb
 
-      # Terminal quality-of-life.
+      # Terminal quality-of-life. Everything here is Fedora main -- with the
+      # obvious exception of `lazygit`, which is not packaged for Fedora at all
+      # (same reason Ghostty is not). It is a `brew install lazygit` away, and
+      # Homebrew is in this image, so it is not worth a third-party repo.
       - git
       - git-delta
       - git-lfs
@@ -153,7 +160,6 @@ modules:
       - zoxide
       - direnv
       - tmux
-      - lazygit
       - gh
       - jq
       - yq
