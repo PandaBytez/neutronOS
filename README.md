@@ -16,9 +16,11 @@ Not a GNOME or KDE image. There is no desktop environment underneath — just a 
 - **Shell** — pure **Fish**, with automatic **Homebrew** path integration.
 - **Containers** — **podman** (with the `docker` CLI shim) and **distrobox**. Language toolchains live in containers, not on the host.
 - **Native build** — gcc/g++, make, cmake, ninja, pkgconf, gdb. Required *despite* the container strategy: Rust needs a C linker and `cc`, Go needs cgo, and `podman build` runs on the host.
+- **Not-in-Fedora tools** — a **Homebrew bundle** at `/usr/share/homebrew/Brewfile`, applied on first boot. `lazygit` is the only entry today: it is not packaged for Fedora at all, and asking rpm-ostree for it fails the build.
 - **Laptop** — **TLP** for battery, thermals and ThinkPad charge thresholds. A DE-less session has no power daemon otherwise.
 - **Browser** — **LibreWolf** (flatpak), set as the system default for `http`, `https` and `text/html`.
 - **Flatpaks** — Bazaar, LibreWolf, Gear Lever, DistroShelf.
+- **Installer** — **`neutronos-install`**, a whiptail TUI that lives in the image. Boot the ISO and it starts by itself on tty1: no terminal, no command, just a menu of disks and a passphrase. It lays down the same ESP + unencrypted `/boot` + LUKS2/btrfs root every Universal Blue install produces, and takes about a minute.
 
 ### Dev environments
 
@@ -29,7 +31,7 @@ dinit    # distrobox create --name (basename $PWD) --image fedora:latest
 dsh      # distrobox enter (basename $PWD)
 ```
 
-`distrobox` shares your home directory, so projects live on the host and the toolchain lives in the container. The container is named after the current directory, so each project gets its own toolchain automatically — no editing the config required. Rootless container support needs `uidmap` (installed), which provides `newuidmap`; without it the first `dsh` fails in a way that looks like a distrobox bug.
+`distrobox` shares your home directory, so projects live on the host and the toolchain lives in the container. The container is named after the current directory, so each project gets its own toolchain automatically — no editing the config required. Rootless container support needs `newuidmap`/`newgidmap`, which Fedora puts in `shadow-utils` and the base already has; the build gate asserts `newuidmap` on `PATH`, because without it the first `dsh` fails in a way that looks like a distrobox bug rather than a missing package.
 
 ### Keybindings
 
@@ -79,14 +81,27 @@ A base change is the only clean way to drop the gaming stack, so the base change
 | `config/files/etc/skel/.config/niri/config.kdl` | niri config, derived from the packaged default |
 | `config/files/etc/skel/.config/ghostty/config` | Terminal config |
 | `config/files/etc/skel/.config/fish/config.fish` | Shell config, Homebrew init, `distrobox` helpers |
+| `config/files/usr/bin/neutronos-install` | The installer, shipped into the image at `/usr/bin/neutronos-install` |
+| `config/files/usr/lib/systemd/system/neutronos-install.service` | Starts the installer on tty1 — on the ISO only, gated on `neutronos.live` |
+| `config/files/usr/lib/systemd/system/greetd.service.d/10-neutronos-live.conf` | Skips the greeter on the ISO so it does not fight the installer for vt1 |
+| `config/files/usr/share/homebrew/Brewfile` | Everything not in Fedora, applied as one `brew bundle` on first boot |
+| `config/files/usr/lib/systemd/system/neutronos-brew-bundle.service` | Runs that bundle as the first user, once, and only stamps on success |
+| `disk_config/live.toml` | The one thing that makes the ISO a live session: appends `neutronos.live=1` |
+| `.github/workflows/build.yml` | BlueBuild job, plus the `live-iso` job that turns the image into a USB |
 | `Containerfile` | Local build, mirrors `config/recipe.yml` |
 
 ### Module order
 
 ```
 pre-install → install → terra-repo → install (ghostty) → brew
-→ flatpaks → skel → post-install → niri-defaults → verify
+→ flatpaks → files (skel + installer + units) → post-install
+→ niri-defaults → verify
 ```
+
+The `files` module carries more than skel now: `/usr/bin/neutronos-install` and the
+two systemd units that make the live ISO boot into the installer. `post-install`
+runs after it because that is where `systemctl enable` happens — the units have to
+be on disk before they can be enabled.
 
 Two orderings are load-bearing:
 
@@ -160,6 +175,21 @@ There is no longer a `strip-gnome` or `strip-kde-leftovers` step — see below.
 - **The gate is not a blanket `^gnome-` ban.** `xdg-desktop-portal-gnome` is *required* by niri for screencast and pulls `gnome-desktop` and `gnome-menus` in as libraries. Those are allowed; `gnome-shell`, `gdm`, `mutter` and friends are not.
 - **TLP is enabled, and `tlp-pd` must stay absent.** `tlp-pd` is the `power-profiles-daemon` integration; there is no `power-profiles-daemon` in a DE-less image, and two things believing they own power policy is a bug. TLP's settings all live in `/etc/tlp.conf`; nothing is written at build time.
 - **Keep the `Containerfile` and `config/recipe.yml` in sync.** The Containerfile does not reproduce BlueBuild's `brew` or `default-flatpaks` modules, so a local build has no Homebrew and no flatpaks and the LibreWolf MIME checks self-skip.
+- **The installer does not use `bootc install to-disk`, and that is deliberate.** `to-disk` can only offer `--block-setup tpm2-luks`, which seals the volume key to the TPM with **no passphrase** — no recovery key, and an unbootable disk if the TPM ever reseeds. bootc upstream says it should not be recommended for new deployments, and LUKS-with-passphrase is still an open upstream request ([bootc#1329](https://github.com/bootc-dev/bootc/issues/1329), also #421 and #2089). Upstream's own guidance is to set encryption up independently and point `bootc install to-filesystem` at the result, which is what Anaconda's bootc kickstart does and what `neutronos-install` does.
+- **`/boot` is deliberately not encrypted.** This base boots GRUB + BLS (the `bootc` package ships the BLS `/usr/lib/kernel/install.conf` layout) and GRUB cannot read LUKS, so the kernels and their BLS entries have to live somewhere unencrypted. The partition sizes and the ESP label match the uBlue ISOs on purpose: a user who has installed uBlue before should see the same layout.
+- **`newt` is the RPM that ships `/usr/bin/whiptail`,** and `cryptsetup`, `btrfs-progs` and `dosfstools` are what the installer runs. They are named explicitly for the same reason as the session infrastructure: each one fails *halfway through wiping someone's disk* if it is missing. The gate asserts `whiptail` as a capability rather than `newt` as a package name.
+- **`tpm2-tools` has to be installed at build time, not at first boot,** because `dracut-install` silently omits a module whose userspace binaries it cannot find. Without it in the image the initramfs has no `tpm2-tss`, `luks-enable-tpm2-autounlock` appears to succeed, and the disk then never auto-unlocks. The gate therefore greps the **initramfs** for `tpm2-tss` rather than asserting the package.
+- **BlueBuild's `files` module has no `mode` key.** `COPY` preserves the source mode, so the exec bit has to be committed in git — that is the only thing making `/usr/bin/neutronos-install` executable in the CI image, and the gate checks `[ -x ]`.
+- **The `files` module must list `source: usr`.** It listed only `etc/skel`, which left `/usr/lib/tmpfiles.d/neutronos-greeter.conf` out of the BlueBuild image entirely — build-time content under `/var` does not ship, and the greeter needs that drop-in at boot. The `Containerfile`'s `COPY config/files /` always copied it, which is exactly how the two drifted apart.
+- **The installer starts itself from GRUB, with nothing typed.** On the live ISO `neutronos-install.service` takes tty1 and runs the TUI, which is the whole reason the ISO and the installed system are distinguished by one kernel argument (`neutronos.live=1`, appended by `disk_config/live.toml`). Three details are load-bearing:
+  - **`TTYPath=/dev/tty1` plus `StandardInput=tty`** is what makes whiptail work at all. A systemd service has no controlling terminal, and whiptail initialises a curses screen on `/dev/tty`, so without this it fails on startup rather than drawing a box.
+  - **The greeter is skipped with a systemd condition, not `Conflicts=`.** `greetd.service.d/10-neutronos-live.conf` carries `ConditionKernelCommandLine=!neutronos.live`. Two units both wanting vt1 produce a visible tug-of-war on the console; a skipped unit costs nothing.
+  - **The unit is enabled unconditionally and does nothing on an installed system.** Do not "fix" that by gating the enable on something else: the condition is the gate, and a wrong condition means a working machine whose console is an installer.
+- **The live ISO is built on the weekly rebuild and on demand, not on every push.** It is ~2 GB and takes ~15 minutes; nobody reinstalls because a script changed. Dispatch the `Build neutronOS Image` workflow by hand to get one for the current `main`.
+- **The installer refuses any disk with a mounted partition,** independently of hiding the running disk from the menu. On the live ISO that is what stops someone picking the USB stick they are booting from, which is the worst available mistake.
+- **`uidmap` is not a Fedora package, and `lazygit` is not either.** Naming them in the recipe failed the build outright with `Packages not found: uidmap, lazygit` after the base moved to `base-main`; the old gaming base carried them in repos `base-main` does not have. Fedora puts `newuidmap`/`newgidmap` in `shadow-utils` (`uidmap` is the *Debian* name for the same binaries), and `lazygit` has no Fedora packaging at all. The gate now asserts `newuidmap` on `PATH` — the capability rootless podman actually needs, independent of the RPM — and `lazygit` moved to the Homebrew bundle.
+- **Anything not in Fedora belongs in `/usr/share/homebrew/Brewfile`,** applied by `neutronos-brew-bundle.service` on the first boot. Not at build time: `/var` is empty on a fresh deployment, so a brew installation made during the build would be discarded rather than shipped — the same trap as the greeter's tmpfiles.d. And not by asking users to type `brew install` after every rebase. The service runs as UID 1000 because Homebrew refuses to run as root and that is the first account by construction; it stamps `/var/lib/neutronos/brew-bundle-done` only on success, so a bundle that failed for want of network is retried on the next boot instead of being skipped forever.
+- **The installer's last job is creating the first account,** because `bootc install` deliberately creates none. Without it the Noctalia Greeter comes up with nobody to log in as. `useradd -m` is what makes a fresh install pick up `/etc/skel`, and `-s /usr/bin/fish` stands in for `chsh`, which this base deletes.
 
 ### Licensing
 
@@ -195,6 +225,27 @@ podman build -t neutron-dev:local -f Containerfile .
 This omits Homebrew and the flatpaks (BlueBuild-only modules), so it is a
 partial image. Use CI for the real thing.
 
+### The live ISO locally
+
+Same invocation CI uses, so a local ISO matches the artifact:
+
+```bash
+sudo podman pull ghcr.io/pandabytez/neutronos:latest
+mkdir -p output
+sudo podman run --rm --privileged --pull=newer --net=host \
+  --security-opt label=type:unconfined_t \
+  -v "$PWD/disk_config/live.toml:/config.toml:ro" \
+  -v "$PWD/output:/output" \
+  -v /var/lib/containers/storage:/var/lib/containers/storage \
+  quay.io/centos-bootc/bootc-image-builder:latest \
+  --type live-iso --use-librepo=True --rootfs=btrfs \
+  ghcr.io/pandabytez/neutronos:latest
+find output -name '*.iso'
+```
+
+`disk_config/live.toml` is what makes the ISO boot into the installer instead of
+the greeter. Drop that `-v` and you get an ordinary live image of neutronOS.
+
 ## Recover from a broken login screen
 
 The greeter runs before authentication, so if it fails to start you get a black
@@ -215,6 +266,48 @@ sudo journalctl -u greetd -b
 ```
 
 ## Install
+
+### From the ISO
+
+Download `neutronos-live.iso` from the artifacts of the latest successful
+[workflow run](../../actions/workflows/build.yml), write it to a USB stick, boot
+it, and the installer starts on its own. There is nothing to type.
+
+Six questions: which disk, a confirmation that names the disk, a username, a
+hostname, and the encryption passphrase twice. Then it partitions, creates the
+LUKS2 container, formats btrfs, writes the image with
+`bootc install to-filesystem`, creates the first account, and tells you to pull
+the stick and reboot.
+
+### From an installed neutronOS
+
+```bash
+sudo neutronos-install
+```
+
+Same TUI, same questions. Useful for reinstalling onto different hardware.
+
+### Then
+
+The root filesystem is **encrypted**. The passphrase is typed once during install
+and then at every boot, and there is no recovery key — keep it. After the first
+boot you can seal the volume key to the machine's TPM and stop being asked:
+
+```bash
+sudo luks-enable-tpm2-autounlock
+```
+
+That script ships in the base (`ublue-os-luks`) and seals to PCR 7+14, i.e.
+Secure Boot and MokList state. A firmware update or a MOK change invalidates the
+seal and you fall back to the passphrase; that is the intended trade-off. Run it
+**from the installed system**, never from the installer: enrolling from an
+installer seals against the *installer's* PCR 7, which the installed system never
+boots with, and the disk then never unlocks again.
+
+A fresh install is the only path that gets `/etc/skel` applied, so niri,
+Ghostty and fish come pre-configured. Rebasing an existing install does not.
+
+### Rebasing an existing install
 
 > **If you are coming from the old gaming neutronOS, this is a base change**
 > (`bazzite-gnome` → `base-main`). A fresh install is the low-risk path. If you
