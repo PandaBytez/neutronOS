@@ -34,3 +34,46 @@ jobs:
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           build_opts: "--no-sign"
+
+  # The live installer ISO: boot it from a USB stick and neutronos-install starts
+  # by itself on tty1. Needs the image to exist in GHCR, hence `needs`.
+  #
+  # Only on the weekly rebuild and on demand, NOT on every push: the ISO is ~2 GB
+  # and takes ~15 minutes to build, and nobody reinstalls because a script changed.
+  # Dispatch this workflow by hand to get an ISO for the current main.
+  live-iso:
+    name: Build live installer ISO
+    needs: bluebuild
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Build the ISO with bootc-image-builder
+        run: |
+          mkdir -p output
+          sudo podman run --rm --privileged --pull=newer --net=host \
+            --security-opt label=type:unconfined_t \
+            -v "$PWD/disk_config/live.toml:/config.toml:ro" \
+            -v "$PWD/output:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+            --type live-iso --use-librepo=True --rootfs=btrfs \
+            "ghcr.io/${{ github.repository_owner }}/neutronos:latest"
+
+      # The output layout is bootc-image-builder's business (bootiso/live.iso,
+      # live-iso/live.iso have both existed), so glob rather than guess.
+      - name: Checksum the ISO
+        run: |
+          iso=$(find output -name '*.iso' -print -quit)
+          [ -n "$iso" ] || { echo "no ISO produced"; exit 1; }
+          sha256sum "$iso" | tee "${iso%.iso}.SHA256"
+          cat "${iso%.iso}.SHA256"
+
+      - name: Upload the ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: neutronos-live-iso
+          path: output/
+          retention-days: 14
+          compression-level: 0

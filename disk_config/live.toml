@@ -1,0 +1,15 @@
+# Build config for bootc-image-builder, used by the live-iso job in
+# .github/workflows/build.yml to turn the published image into a bootable USB.
+#
+# The ONLY reason this file exists is to append one kernel argument. The ISO and
+# the installed system are the same image, so without it there is no way to tell
+# them apart -- and the installer service must be inert on an installed machine,
+# because it takes the console.
+#
+# `append` is a space-separated string, not an array (see the bootc-image-builder
+# documentation and the RHEL "Using image mode" guide, section "Adding install-time
+# kernel arguments"). The name is also validated by bootc-image-builder against
+# its schema, so a typo here fails the build rather than silently producing an ISO
+# that boots to the greeter with no installer.
+[customizations.kernel]
+append = "neutronos.live=1"
