@@ -3,12 +3,11 @@
 #
 # Two modules are NOT reproduced here because they only exist inside BlueBuild:
 #   - `brew`              (Homebrew lands in /home/linuxbrew)
-#   - `default-flatpaks`  (Bazaar, LibreWolf, Proton Plus, Gear Lever, LACT,
-#                           DistroShelf)
+#   - `default-flatpaks`  (Bazaar, LibreWolf, Gear Lever, DistroShelf)
 # A local build therefore has no Homebrew and no flatpaks, and the LibreWolf
 # MIME assertions in verify-desktop.sh will fail. That is expected: use
 # BlueBuild (or push to main) for a complete image.
-FROM ghcr.io/ublue-os/bazzite-gnome:latest
+FROM ghcr.io/ublue-os/base-main:latest
 
 # Copy configuration scripts and files
 COPY config/scripts /tmp/scripts
@@ -20,23 +19,29 @@ RUN chmod +x /tmp/scripts/*.sh
 # Resolve the dangling /opt and /usr/local symlinks
 RUN /tmp/scripts/pre-install.sh
 
-# Remove the GNOME desktop inherited from the base. Before the install so the
-# dnf cascade has none of our own apps to swallow.
-RUN /tmp/scripts/strip-gnome.sh
-
-# Install the session. Everything is Fedora 44 main; no COPRs, no third-party
-# repos. niri pulls xwayland-satellite.
+# Install the session, the desktop runtime infrastructure and the dev layer.
+# All of these are Fedora 44 main. niri pulls xwayland-satellite.
+#
+# The infrastructure packages are named explicitly even when the base may
+# already have them: on a desktop-less base an inherited dependency is not
+# guaranteed, and verify-desktop.sh asserts every one of them. NetworkManager
+# matters most -- this is a laptop image.
 RUN dnf install -y \
       niri noctalia tuigreet greetd greetd-selinux \
       xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
-      alacritty fish accountsservice gamemode \
-      cliphist wlsunset brightnessctl playerctl wl-clipboard && \
+      fish alacritty \
+      pipewire wireplumber gnome-keyring gnome-keyring-pam gvfs avahi bluez \
+      NetworkManager \
+      ddcutil accountsservice cliphist wlsunset brightnessctl playerctl \
+      wl-clipboard \
+      podman podman-docker uidmap distrobox \
+      gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config gdb \
+      git git-delta git-lfs ripgrep fd-find bat eza tree fzf zoxide direnv \
+      tmux lazygit gh jq yq shellcheck shfmt btop sqlite man-pages \
+      tlp && \
     dnf clean all
 
-# Remove the KDE leftovers the install closure drags in
-RUN /tmp/scripts/strip-kde-leftovers.sh
-
-# Post-install: fish, greetd+tuigreet, LibreWolf MIME default
+# Post-install: fish, greetd+tuigreet, TLP, LibreWolf MIME default
 RUN /tmp/scripts/post-install.sh && rm -rf /tmp/scripts
 
 # Check the niri/Noctalia wiring and validate the shipped config

@@ -47,8 +47,17 @@ absent '^(gnome-bluetooth|gnome-disk-utility|gnome-color-manager|gnome-remote-de
 absent '^(evolution-.*|gcr)$'
 # epiphany (GNOME Web) was the base's only browser; the default is LibreWolf.
 absent '^epiphany'
-# Non-free, dropped deliberately for a redistributable public image.
+# Non-free, dropped deliberately for a redistributable public image. The base
+# has not shipped it since the move off bazzite-gnome, so this is a licensing
+# guard rather than a fix.
 absent '^displaylink'
+
+# --- No gaming stack. This image was a gaming image (bazzite-gnome, OGC kernel,
+# --- Steam) and stopped being one; the base moved to ublue-os/base-main to make
+# --- that possible. base-main is a stable tag, so a future bump could quietly
+# --- bring any of this back. Assert its absence for the same reason the KDE and
+# --- GNOME bans above exist.
+absent '^(steam|proton|gamescope|gamemode|terra-|lutris|heroic)'
 
 # --- No leftover desktop from earlier iterations of this image.
 absent '^(cosmic-|ptyxis|vicinae|yazi|ghostty|Thunar)'
@@ -58,21 +67,19 @@ present niri noctalia tuigreet alacritty greetd
 present xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 present fish accountsservice cliphist wlsunset brightnessctl playerctl wl-clipboard
 
-# Noctalia drives monitor brightness through ddcutil. The base provides it as
-# terra-ddcutil, so assert the capability rather than the package name --
-# installing Fedora's ddcutil on top is a hard conflict.
+# Noctalia drives monitor brightness through ddcutil.
 #
-# Command substitution, not `rpm -qa ... | grep -qx`. The -q makes grep exit on
+# This used to accept `terra-ddcutil` as an alternative provider, because the
+# old bazzite-gnome base shipped that and installing Fedora's ddcutil over it was
+# a hard conflict. Both halves of that are now false: base-main has no terra
+# repo, so terra-ddcutil cannot be present (it is banned above), and the recipe
+# deliberately installs Fedora's ddcutil. So this is now a plain presence check.
+#
+# Command substitution, not `rpm -q ddcutil | grep -qx`. The -q makes grep exit on
 # the first match, rpm takes SIGPIPE and dies 141, and under `set -o pipefail`
 # that turns a successful match into a false failure. Every other check in this
 # script uses the substitution form for the same reason.
-ddc_providers=$(rpm -qa --qf '%{name}\n' | grep -xE '(terra-)?ddcutil' | tr '\n' ' ' || true)
-if [ -n "$ddc_providers" ]; then
-    echo "ok    ddcutil provider present: $ddc_providers"
-else
-    echo "FAIL  no ddcutil provider (need ddcutil or terra-ddcutil for Noctalia brightness)"
-    fail=1
-fi
+present ddcutil
 
 # Files, not packages, that the desktop depends on.
 for f in /usr/share/wayland-sessions/niri.desktop \
@@ -112,43 +119,68 @@ else
     fail=1
 fi
 
-# --- Shared infrastructure the strip must not have taken with it.
-present mesa-dri-drivers mesa-libEGL pipewire
-
-# GameMode. The package is not enough: Fedora ships no user-preset for it, so
-# the daemon is only running if the wants symlink exists. Assert all three --
-# package, unit, and enablement -- because "installed" silently not running is
-# exactly the failure nobody notices until a game stutters.
-present gamemode
-if [ -e /usr/lib/systemd/user/gamemoded.service ]; then
-    echo "ok    gamemoded user unit present"
-else
-    echo "FAIL  /usr/lib/systemd/user/gamemoded.service missing"
-    fail=1
-fi
-if [ -L /etc/systemd/user/default.target.wants/gamemoded.service ] || \
-   [ -e /etc/systemd/user/default.target.wants/gamemoded.service ]; then
-    echo "ok    gamemoded enabled for every user"
-else
-    echo "FAIL  gamemoded is not enabled -- the package ships no preset, so it never starts"
-    fail=1
-fi
-# The auto-activation shim is what makes it work without per-game config.
-if rpm -ql gamemode 2>/dev/null | grep -q 'libgamemodeauto\.so'; then
-    echo "ok    libgamemodeauto present (auto-activation)"
-else
-    echo "FAIL  libgamemodeauto missing -- games would need gamemoderun manually"
-    fail=1
-fi
+# --- Desktop runtime infrastructure. base-main has no desktop, so these are
+# --- declared explicitly in the recipe rather than inherited. Assert them all:
+# --- each one is a silent, confusing failure if the base ever stops providing
+# --- it. NetworkManager is the critical one -- this is a laptop image, and a
+# --- missing NetworkManager means no Wi-Fi after a reboot, with no error on the
+# --- console beyond the icon not appearing.
+present pipewire wireplumber
 present gnome-keyring gnome-keyring-pam gvfs avahi bluez flatpak
+present NetworkManager mesa-dri-drivers mesa-libEGL mesa-vulkan-drivers
 
-# --- The gaming layer from the bazzite base must survive the strip, including
-# --- the OGC kernel this image exists for.
-present terra-gamescope terra-mangohud terra-release-mesa steam
-if rpm -q kernel-core | grep -q -- '-ogc'; then
-    echo "ok    OGC kernel: $(rpm -q kernel-core)"
+# --- The kernel must be the stock signed Fedora one, NOT the OGC gaming kernel.
+# --- This is the assertion that pins the bazzite-gnome -> base-main move: OGC
+# --- was Bazzite's default kernel and would be a silent regression, since it
+# --- still boots fine and nothing else here would notice.
+kernel=$(rpm -q kernel-core 2>/dev/null || true)
+if [ -z "$kernel" ]; then
+    # "no -ogc in the output" is not the same as "a stock kernel is installed".
+    # An absent kernel-core would otherwise sail through this check.
+    echo "FAIL  kernel-core is not installed"
+    fail=1
+elif printf '%s' "$kernel" | grep -q -- '-ogc'; then
+    echo "FAIL  OGC gaming kernel present, want the stock Fedora kernel: $kernel"
+    fail=1
 else
-    echo "FAIL  OGC kernel missing: $(rpm -q kernel-core 2>&1)"
+    echo "ok    stock kernel: $kernel"
+fi
+
+# --- TLP. The package alone does nothing: it ships a systemd service with no
+# --- preset that starts TLP and applies /etc/tlp.conf, so without the unit
+# --- being enabled a DE-less session silently has no power management at all
+# --- and the laptop just runs hot and flat. Assert package, binary and
+# --- enablement -- "installed but not running" is the failure mode.
+present tlp
+if [ -x /usr/sbin/tlp ]; then
+    echo "ok    tlp binary: /usr/sbin/tlp"
+else
+    echo "FAIL  /usr/sbin/tlp missing or not executable"
+    fail=1
+fi
+if systemctl is-enabled tlp.service >/dev/null 2>&1; then
+    echo "ok    enabled: tlp.service"
+else
+    echo "FAIL  tlp.service is not enabled -- battery and thermals unmanaged"
+    fail=1
+fi
+# tlp-pd is the power-profiles-daemon integration. There is no
+# power-profiles-daemon in a DE-less image, so shipping it would be dead
+# weight that also creates a second thing that thinks it owns power policy.
+absent '^(tlp-pd|power-profiles-daemon)$'
+
+# --- The development layer. Container toolchains are the point of this image.
+present podman podman-docker uidmap distrobox
+present gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config gdb
+present git git-delta git-lfs ripgrep fd-find bat eza tree fzf zoxide direnv
+present tmux lazygit gh jq yq shellcheck shfmt btop sqlite man-pages
+
+# podman-docker is what provides the `docker` CLI. Distros, Dockerfiles and CI
+# docs assume it exists, and its absence is confusing rather than obvious.
+if [ -x /usr/bin/docker ]; then
+    echo "ok    docker CLI shim present (podman-docker)"
+else
+    echo "FAIL  /usr/bin/docker missing -- podman-docker did not provide the shim"
     fail=1
 fi
 
@@ -182,8 +214,7 @@ else
     fail=1
 fi
 
-# The greeter's state directory. tuigreet writes its last-user/session state
-# here, and it is created by greetd's tmpfiles.d at boot.
+# The greeter's state directory, created at boot by greetd's tmpfiles.d.
 if [ -d /var/lib/greetd ]; then
     echo "ok    /var/lib/greetd present"
 else

@@ -1,11 +1,13 @@
 # neutronOS -- niri + Noctalia Blueprint (BlueBuild)
 # https://blue-build.org/reference/recipe/
 #
-# Terminal-focused, scrollable-tiling atomic desktop:
+# Terminal-focused, scrollable-tiling atomic DESKTOP for development:
 #   compositor -> niri (Fedora main)
 #   shell      -> Noctalia (Fedora main)
-#   greeter    -> greetd + tuigreet
-#   base       -> ublue-os/bazzite-gnome, GNOME stripped
+#   base       -> ublue-os/base-main, stock signed Fedora kernel
+#
+# Third-party source, deliberate and minimal:
+#   - Flathub, for the four flatpaks. Nothing else.
 #
 # This name is the GHCR image path: ghcr.io/<owner>/neutronos
 # It must be lowercase: BlueBuild emits it as a Containerfile stage name
@@ -13,11 +15,18 @@
 # the path regardless, so the camelCase "neutronOS" can only live in the repo
 # name, never in the image reference.
 name: neutronos
-description: Terminal-focused scrollable-tiling atomic desktop with niri and Noctalia
-# bazzite-gnome (silverblue-based) is used for the OGC gaming kernel, akmods,
-# terra-mesa and the Terra repo -- Terra is where noctalia-greeter lives. It
-# carries zero Plasma, and strip-gnome.sh removes the GNOME desktop it inherits.
-base-image: ghcr.io/ublue-os/bazzite-gnome
+description: Terminal-focused scrollable-tiling atomic dev desktop with niri, Noctalia and distrobox
+# base-main is base-atomic + the ublue layer: NO desktop at all, the stock
+# signed Fedora kernel (from ublue-os/akmods), Mesa/Intel from negativo17's
+# fedora-multimedia repo, Flathub as the default remote, ublue-os-just and the
+# ublue hardware + update services.
+#
+# It replaced bazzite-gnome when this stopped being a gaming image. That base
+# brought the OGC kernel and Steam, and neither could be removed in place: OGC
+# *is* Bazzite's default kernel, and Steam's dependency closure holds the
+# firmware/Mesa layer the display depends on. A base change is the only clean
+# way to drop the gaming stack.
+base-image: ghcr.io/ublue-os/base-main
 image-version: latest
 
 modules:
@@ -28,25 +37,17 @@ modules:
     scripts:
       - pre-install.sh
 
-  # 2. Remove the GNOME desktop left over from the base image.
-  #    Runs before the install so the cascade has nothing of ours to swallow:
-  #    the COSMIC-era GTK4 apps shared dependencies with the GNOME set, and
-  #    dnf5 takes dependents along with what you remove.
-  - type: script
-    scripts:
-      - strip-gnome.sh
-
-  # 3. Core packages. Everything here is in Fedora 44 main; no COPRs are used.
-  #    niri pulls xwayland-satellite and ddcutil/cliphist/wlsunset are Noctalia's
-  #    optional dependencies.
+  # 2. Core packages. Everything here is in Fedora 44 main. niri pulls
+  #    xwayland-satellite; ddcutil/cliphist/wlsunset are Noctalia's optional
+  #    dependencies.
   - type: rpm-ostree
     install:
       # Compositor, shell, greeter
       - niri
       - noctalia
-      - tuigreet
       - greetd
       - greetd-selinux
+      - tuigreet
 
       # Portals. niri ships /usr/share/xdg-desktop-portal/niri-portals.conf and
       # implements screencast via the GNOME backend, so both are required.
@@ -54,23 +55,46 @@ modules:
       - xdg-desktop-portal-gnome
       - xdg-desktop-portal-gtk
 
-      # Terminal. Alacritty over ptyxis on purpose: niri's columns are the
-      # splits, so a terminal with its own split panes is redundant. niri's
-      # default config already binds Mod+T to alacritty.
-      - alacritty
-
       # Shell
       - fish
 
-      # GameMode: the daemon plus gamemoderun and libgamemodeauto, so Steam
-      # titles get performance governor + screensaver inhibition while running.
-      # Installed alone it does NOT enable itself -- see post-install.sh.
-      - gamemode
+      # Terminal. Alacritty over ptyxis on purpose: niri's columns are the splits,
+      # so a terminal with its own split panes is redundant.
+      - alacritty
 
-      # Noctalia helpers, and user avatars for the greeter.
-      # ddcutil is deliberately NOT listed: the base ships terra-ddcutil, which
-      # Provides: ddcutil (3.0.2, newer than Fedora's 2.2.1), and installing the
-      # Fedora package on top fails with "conflicting requests".
+      # Session infrastructure, declared EXPLICITLY rather than inherited.
+      #
+      # base-main has no desktop, so several things a session silently depends
+      # on may be absent or may be absent in a future base bump. Naming them here
+      # makes the image deterministic: an `rpm-ostree install` of something
+      # already present is a no-op, and verify-desktop.sh asserts every one of
+      # them, so losing one fails the build instead of failing on someone's
+      # laptop. NetworkManager is the important one -- this is a laptop image,
+      # and a base bump that drops it leaves the machine with no Wi-Fi after a
+      # reboot.
+      #
+      # Mesa is deliberately NOT listed, even though it is obviously required.
+      # ublue-os/main's install script already pulls mesa-dri-drivers,
+      # mesa-libEGL, mesa-libGL, mesa-libgbm and mesa-vulkan-drivers from
+      # negativo17's fedora-multimedia repo at priority 90, then *versionlocks*
+      # them. Asking rpm-ostree to install an already-present, versionlocked
+      # package is at best a no-op and at worst a versionlock conflict. The gate
+      # still asserts the packages are present -- the assertion is about the
+      # capability, not about who provides it. See the README.
+      - pipewire
+      - wireplumber
+      - gnome-keyring
+      - gnome-keyring-pam
+      - gvfs
+      - avahi
+      - bluez
+      - NetworkManager
+
+      # Noctalia drives monitor brightness through ddcutil. On the old
+      # bazzite-gnome base this was terra-ddcutil (Provides: ddcutil) and
+      # installing Fedora's ddcutil on top failed with "conflicting requests".
+      # base-main has no terra repo, so the Fedora package is correct here.
+      - ddcutil
       - accountsservice
       - cliphist
       - wlsunset
@@ -78,16 +102,66 @@ modules:
       - playerctl
       - wl-clipboard
 
-  # 4. Remove the KDE leftovers the install closure drags in. Deliberately a
-  #    separate, small pass: see the script header.
-  - type: script
-    scripts:
-      - strip-kde-leftovers.sh
+      # --- Development layer ---
+      #
+      # Containers. This is an immutable image: native toolchains never update
+      # without a rebuild, so language toolchains belong in containers. podman
+      # ships in the base; podman-docker adds the `docker` CLI so Docker-only
+      # instructions in docs work verbatim.
+      - podman
+      - podman-docker
+      # uidmap provides newuidmap, which rootless podman needs for user-namespace
+      # mapping. Without it the first `distrobox enter` fails in a way that looks
+      # like a distrobox bug rather than a missing package.
+      - uidmap
+      - distrobox
 
-  # 5. Homebrew for user-managed CLI & TUI packages
+      # Native build tools. NOT optional despite the container strategy:
+      # Rust needs a C linker and `cc`, Go needs cgo, and `podman build` runs
+      # on the host -- so every toolchain in a distrobox links against these.
+      - gcc
+      - gcc-c++
+      - make
+      - cmake
+      - ninja-build
+      - pkgconf-pkg-config
+      - gdb
+
+      # Terminal quality-of-life.
+      - git
+      - git-delta
+      - git-lfs
+      - ripgrep
+      - fd-find
+      - bat
+      - eza
+      - tree
+      - fzf
+      - zoxide
+      - direnv
+      - tmux
+      - lazygit
+      - gh
+      - jq
+      - yq
+      - shellcheck
+      - shfmt
+      - btop
+      - sqlite
+      - man-pages
+
+      # Laptop battery. A DE-less niri session ships NO power daemon at all --
+      # GNOME's power-profiles-daemon and KDE's powerdevil are both absent --
+      # so TLP is the only thing managing CPU governor, USB autosuspend and
+      # audio codec power. It also exposes ThinkPad charge thresholds and
+      # battery recalibration. Do not add tlp-pd: that is the power-profiles-
+      # daemon integration, and there is no power-profiles-daemon here.
+      - tlp
+
+  # 3. Homebrew for user-managed CLI & TUI packages
   - type: brew
 
-  # 6. Pre-installed flatpaks
+  # 4. Pre-installed flatpaks
   - type: default-flatpaks
     configurations:
       - scope: system
@@ -95,29 +169,27 @@ modules:
         install:
           - io.github.kolunmi.Bazaar
           - io.gitlab.librewolf-community
-          - com.vysp3r.ProtonPlus
           - it.mijorus.gearlever
-          - io.github.ilya_zlobintsev.LACT
           - com.ranfdev.DistroShelf
 
-  # 7. Default user skeleton: niri config, alacritty config, fish config
+  # 5. Default user skeleton: niri config, alacritty config, fish config
   - type: files
     files:
       - source: etc/skel
         destination: /etc/skel
 
-  # 8. Post-install adjustments. Runs after the flatpak module so the browser
+  # 6. Post-install adjustments. Runs after the flatpak module so the browser
   #    MIME default is not raced by the flatpak install.
   - type: script
     scripts:
       - post-install.sh
 
-  # 9. Seed the niri + Noctalia defaults
+  # 7. Seed the niri + Noctalia defaults
   - type: script
     scripts:
       - niri-defaults.sh
 
-  # 10. Fail the build if the desktop is not niri-only
+  # 8. Fail the build if the desktop is not niri-only or the dev layer is absent
   - type: script
     scripts:
       - verify-desktop.sh

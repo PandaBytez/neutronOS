@@ -3,7 +3,9 @@ set -euo pipefail
 
 echo "==> Running post-installation configuration for neutronOS..."
 
-# 1. Ensure fish is registered in /etc/shells, otherwise chsh refuses it.
+# 1. Ensure fish is registered in /etc/shells, otherwise usermod refuses it.
+#    (chsh is the usual tool but does not exist on this base -- Universal Blue's
+#    Containerfile does `rm -f /usr/bin/chsh`. See README.)
 if ! grep -qx "/usr/bin/fish" /etc/shells; then
     echo "/usr/bin/fish" >> /etc/shells
 fi
@@ -11,12 +13,14 @@ fi
 # 2. Default shell for accounts created from here on. This is the only
 #    build-time lever: the first real account is created after the image is
 #    written, and /etc/default/useradd is what useradd-family tooling reads.
-#    It does NOT rewrite an already-existing account -- use `chsh`.
+#    It does NOT rewrite an already-existing account -- use
+#    `usermod -s /usr/bin/fish $USER` (`chsh` does not exist on this base).
 sed -i 's|^SHELL=.*|SHELL=/usr/bin/fish|' /etc/default/useradd 2>/dev/null || true
 
-# 3. greetd + tuigreet. gdm was removed by strip-gnome.sh, but drop the stale
-#    symlink defensively: greetd's greeter becomes display-manager.service, and
-#    a dangling link to gdm.service would leave the display manager broken.
+# 3. greetd + tuigreet. The base has no display manager at all (base-main logs
+#    in on getty), but drop the stale symlink defensively anyway: greetd's
+#    greeter becomes display-manager.service, and a dangling link left by
+#    another package would leave the display manager broken.
 systemctl disable gdm.service sddm.service 2>/dev/null || true
 rm -f /etc/systemd/system/display-manager.service
 mkdir -p /etc/greetd
@@ -38,14 +42,19 @@ user = "greetd"
 EOF
 systemctl enable greetd.service
 
-# 4. Enable gamemoded for every user.
-#    gamemode ships only a *user* unit (/usr/lib/systemd/user/gamemoded.service)
-#    with WantedBy=default.target, and Fedora has no user-preset for it, so
-#    installing the package does not start it. Creating the wants symlink here
-#    enables it per-session for every account, current and future.
-mkdir -p /etc/systemd/user/default.target.wants
-ln -sf /usr/lib/systemd/user/gamemoded.service \
-       /etc/systemd/user/default.target.wants/gamemoded.service
+# 4. TLP for laptop power management.
+#    A DE-less niri session ships no power daemon at all: GNOME's
+#    power-profiles-daemon and KDE's powerdevil are both absent because there is
+#    no desktop. TLP is therefore the only thing tuning the CPU governor, USB
+#    autosuspend and audio codec power, and it also exposes ThinkPad charge
+#    thresholds.
+#
+#    Enabling the unit is the whole job -- `tlp start` runs from the service on
+#    boot, and TLP's settings all live in /etc/tlp.conf, so no configuration is
+#    written here. tlp-pd is deliberately NOT installed: it is the
+#    power-profiles-daemon integration and there is no power-profiles-daemon
+#    here to integrate with.
+systemctl enable tlp.service
 
 # 5. LibreWolf as the system default browser.
 #    `xdg-mime default` is NOT used: it writes to $HOME/.config/mimeapps.list,
